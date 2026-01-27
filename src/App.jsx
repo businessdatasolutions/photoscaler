@@ -597,7 +597,7 @@ const PhotoScaleApp = () => {
     const canvas = canvasRef.current;
     if (!canvas || !image) return;
 
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const displayImage = correctedImage || image;
 
     // Update canvas size if using corrected image
