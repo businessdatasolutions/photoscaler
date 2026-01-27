@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Ruler, Trash2, RefreshCcw, Info, Check, MousePointer2, AlertTriangle, Calculator, Cylinder, Crosshair, Loader2, Circle } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Upload, Ruler, Trash2, RefreshCcw, Info, Check, AlertTriangle, Calculator, Cylinder, Crosshair, Loader2, Circle, FileImage, Move } from 'lucide-react';
 
 // Track OpenCV loading state outside component to survive StrictMode double-mount
 let cvLoadingStarted = false;
@@ -34,6 +34,20 @@ const PhotoScaleApp = () => {
   const [refInputVal, setRefInputVal] = useState('');
   const [refInputUnit, setRefInputUnit] = useState('cm');
   const [refIsDiameter, setRefIsDiameter] = useState(false);
+
+  // Perspective Correction State
+  const [paperCorners, setPaperCorners] = useState(null); // [{x,y}, {x,y}, {x,y}, {x,y}] - TL, TR, BR, BL
+  const [correctedImage, setCorrectedImage] = useState(null); // Corrected Image object
+  const [paperSize, setPaperSize] = useState('a4'); // 'a4', 'letter', 'custom'
+  const [isDetectingPaper, setIsDetectingPaper] = useState(false);
+  const [draggingCorner, setDraggingCorner] = useState(null); // Index of corner being dragged
+
+  // Paper size definitions in mm
+  const PAPER_SIZES = {
+    a4: { width: 210, height: 297, label: 'A4 (210×297mm)' },
+    letter: { width: 215.9, height: 279.4, label: 'US Letter (8.5×11in)' },
+    a5: { width: 148, height: 210, label: 'A5 (148×210mm)' },
+  };
 
   // --- OpenCV Loading ---
   useEffect(() => {
@@ -90,6 +104,9 @@ const PhotoScaleApp = () => {
         setCurrentLine(null);
         setCalcDiameterId('');
         setCalcLengthId('');
+        // Reset perspective state
+        setPaperCorners(null);
+        setCorrectedImage(null);
       };
       img.src = event.target.result;
     };
@@ -211,6 +228,183 @@ const PhotoScaleApp = () => {
     }, 100);
   };
 
+  // --- CV Logic: Detect Paper ---
+  const detectPaper = () => {
+    if (!window.cv || !cvReady || !image) return;
+    setIsDetectingPaper(true);
+
+    setTimeout(() => {
+      try {
+        const cv = window.cv;
+        const src = cv.imread(canvasRef.current);
+        const gray = new cv.Mat();
+        const blurred = new cv.Mat();
+        const edges = new cv.Mat();
+
+        // 1. Convert to grayscale
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        // 2. Apply Gaussian blur to reduce noise
+        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+
+        // 3. Canny edge detection
+        cv.Canny(blurred, edges, 75, 200);
+
+        // 4. Find contours
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+        // 5. Find the largest 4-sided contour (the paper)
+        let maxArea = 0;
+        let paperContour = null;
+
+        for (let i = 0; i < contours.size(); i++) {
+          const cnt = contours.get(i);
+          const peri = cv.arcLength(cnt, true);
+          const approx = new cv.Mat();
+          cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+          // Check if it's a quadrilateral with significant area
+          if (approx.rows === 4) {
+            const area = cv.contourArea(cnt);
+            if (area > maxArea && area > (src.rows * src.cols * 0.05)) {
+              maxArea = area;
+              paperContour = approx;
+            }
+          }
+        }
+
+        if (paperContour) {
+          // Extract the 4 corner points
+          const points = [];
+          for (let i = 0; i < 4; i++) {
+            points.push({
+              x: paperContour.data32S[i * 2],
+              y: paperContour.data32S[i * 2 + 1]
+            });
+          }
+
+          // Order corners: top-left, top-right, bottom-right, bottom-left
+          const orderedCorners = orderCorners(points);
+          setPaperCorners(orderedCorners);
+        } else {
+          alert("Could not detect paper. Ensure the paper has clear edges against the background.");
+        }
+
+        // Cleanup
+        src.delete();
+        gray.delete();
+        blurred.delete();
+        edges.delete();
+        contours.delete();
+        hierarchy.delete();
+
+      } catch (e) {
+        console.error(e);
+        alert("Error detecting paper. Please try again.");
+      }
+      setIsDetectingPaper(false);
+    }, 100);
+  };
+
+  // Order corners: top-left, top-right, bottom-right, bottom-left
+  const orderCorners = (points) => {
+    // Sort by Y first (top vs bottom)
+    const sorted = [...points].sort((a, b) => a.y - b.y);
+    const top = sorted.slice(0, 2).sort((a, b) => a.x - b.x);
+    const bottom = sorted.slice(2, 4).sort((a, b) => a.x - b.x);
+
+    return [top[0], top[1], bottom[1], bottom[0]]; // TL, TR, BR, BL
+  };
+
+  // Apply perspective correction
+  const applyPerspectiveCorrection = () => {
+    if (!window.cv || !cvReady || !image || !paperCorners) return;
+    setIsDetectingPaper(true);
+
+    setTimeout(() => {
+      try {
+        const cv = window.cv;
+        const src = cv.imread(canvasRef.current);
+
+        const paper = PAPER_SIZES[paperSize];
+        // Use a scale factor for output resolution (pixels per mm)
+        const scale = 3; // 3 pixels per mm = reasonable resolution
+        const dstWidth = Math.round(paper.width * scale);
+        const dstHeight = Math.round(paper.height * scale);
+
+        // Source points (detected corners)
+        const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+          paperCorners[0].x, paperCorners[0].y,
+          paperCorners[1].x, paperCorners[1].y,
+          paperCorners[2].x, paperCorners[2].y,
+          paperCorners[3].x, paperCorners[3].y
+        ]);
+
+        // Destination points (rectangular)
+        const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [
+          0, 0,
+          dstWidth, 0,
+          dstWidth, dstHeight,
+          0, dstHeight
+        ]);
+
+        // Get perspective transform matrix
+        const M = cv.getPerspectiveTransform(srcTri, dstTri);
+
+        // Apply the transform
+        const dst = new cv.Mat();
+        const dsize = new cv.Size(dstWidth, dstHeight);
+        cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+        // Convert the result to an image
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = dstWidth;
+        tempCanvas.height = dstHeight;
+        cv.imshow(tempCanvas, dst);
+
+        // Create new Image from the corrected canvas
+        const newImg = new Image();
+        newImg.onload = () => {
+          setCorrectedImage(newImg);
+          // Auto-set scale factor based on paper size (pixels per mm)
+          setScaleFactor(scale);
+          setReferenceLine({
+            start: { x: 0, y: 0 },
+            end: { x: dstWidth, y: 0 },
+            realLength: paper.width,
+            unit: 'mm',
+            isDiameter: false
+          });
+          setPaperCorners(null); // Clear corners after applying
+        };
+        newImg.src = tempCanvas.toDataURL();
+
+        // Cleanup
+        src.delete();
+        dst.delete();
+        srcTri.delete();
+        dstTri.delete();
+        M.delete();
+
+      } catch (e) {
+        console.error(e);
+        alert("Error applying perspective correction.");
+      }
+      setIsDetectingPaper(false);
+    }, 100);
+  };
+
+  // Reset perspective correction
+  const resetPerspective = () => {
+    setCorrectedImage(null);
+    setPaperCorners(null);
+    setReferenceLine(null);
+    setScaleFactor(null);
+    setMeasurements([]);
+  };
+
   // --- Geometry Helpers ---
   const getDistance = (p1, p2) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
@@ -233,21 +427,64 @@ const PhotoScaleApp = () => {
     };
   };
 
+  // --- Corner Dragging Handlers ---
+  const findNearestCorner = (coords, threshold = 30) => {
+    if (!paperCorners) return null;
+    for (let i = 0; i < paperCorners.length; i++) {
+      const dist = getDistance(coords, paperCorners[i]);
+      if (dist < threshold) return i;
+    }
+    return null;
+  };
+
+  const handleCornerDrag = (e) => {
+    if (draggingCorner === null || !paperCorners) return;
+    const coords = getCanvasCoordinates(e);
+    const newCorners = [...paperCorners];
+    newCorners[draggingCorner] = coords;
+    setPaperCorners(newCorners);
+  };
+
   // --- Drawing Handlers ---
   const startDrawing = (e) => {
     if (!image) return;
     const coords = getCanvasCoordinates(e);
+
+    // Check if clicking on a corner for dragging
+    if (paperCorners) {
+      const cornerIdx = findNearestCorner(coords);
+      if (cornerIdx !== null) {
+        setDraggingCorner(cornerIdx);
+        return;
+      }
+    }
+
+    // Don't allow drawing while corners are shown
+    if (paperCorners) return;
+
     setIsDrawing(true);
     setCurrentLine({ start: coords, end: coords });
   };
 
   const draw = (e) => {
+    // Handle corner dragging
+    if (draggingCorner !== null) {
+      handleCornerDrag(e);
+      return;
+    }
+
     if (!isDrawing || !currentLine) return;
     const coords = getCanvasCoordinates(e);
     setCurrentLine({ ...currentLine, end: coords });
   };
 
   const endDrawing = () => {
+    // End corner dragging
+    if (draggingCorner !== null) {
+      setDraggingCorner(null);
+      return;
+    }
+
     if (!isDrawing || !currentLine) return;
     setIsDrawing(false);
 
@@ -361,9 +598,19 @@ const PhotoScaleApp = () => {
     if (!canvas || !image) return;
 
     const ctx = canvas.getContext('2d');
+    const displayImage = correctedImage || image;
+
+    // Update canvas size if using corrected image
+    if (correctedImage && (canvas.width !== correctedImage.naturalWidth || canvas.height !== correctedImage.naturalHeight)) {
+      canvas.width = correctedImage.naturalWidth;
+      canvas.height = correctedImage.naturalHeight;
+    } else if (!correctedImage && (canvas.width !== image.naturalWidth || canvas.height !== image.naturalHeight)) {
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+    }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(image, 0, 0);
+    ctx.drawImage(displayImage, 0, 0);
 
     const drawLine = (start, end, color, width = 3, isDashed = false) => {
       ctx.beginPath();
@@ -406,31 +653,83 @@ const PhotoScaleApp = () => {
         ctx.restore();
     };
 
-    if (referenceLine) {
+    // Draw paper corners if detected (before applying correction)
+    if (paperCorners && !correctedImage) {
+      ctx.save();
+
+      // Draw semi-transparent overlay outside the paper
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Cut out the paper area
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.beginPath();
+      ctx.moveTo(paperCorners[0].x, paperCorners[0].y);
+      for (let i = 1; i < 4; i++) {
+        ctx.lineTo(paperCorners[i].x, paperCorners[i].y);
+      }
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+
+      // Draw the paper outline
+      ctx.beginPath();
+      ctx.moveTo(paperCorners[0].x, paperCorners[0].y);
+      for (let i = 1; i < 4; i++) {
+        ctx.lineTo(paperCorners[i].x, paperCorners[i].y);
+      }
+      ctx.closePath();
+      ctx.strokeStyle = '#10b981';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      // Draw corner handles
+      const cornerLabels = ['TL', 'TR', 'BR', 'BL'];
+      paperCorners.forEach((corner, idx) => {
+        // Outer circle
+        ctx.beginPath();
+        ctx.arc(corner.x, corner.y, 15, 0, Math.PI * 2);
+        ctx.fillStyle = '#10b981';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(cornerLabels[idx], corner.x, corner.y);
+      });
+    }
+
+    if (referenceLine && !paperCorners) {
       drawLine(referenceLine.start, referenceLine.end, '#3b82f6', 4);
       let label = `REF: ${referenceLine.realLength} ${referenceLine.unit}`;
       if (referenceLine.isDiameter) label = `Ø: ${referenceLine.realLength} ${referenceLine.unit}`;
       drawLabel(referenceLine.start, referenceLine.end, label, '#3b82f6');
-    } else if (currentLine && !scaleFactor) {
+    } else if (currentLine && !scaleFactor && !paperCorners) {
       drawLine(currentLine.start, currentLine.end, '#3b82f6', 4, true);
     }
 
     measurements.forEach((m, idx) => {
-      const isSelected = !referenceLine.isDiameter && (m.id.toString() === calcDiameterId || m.id.toString() === calcLengthId);
+      const isSelected = !referenceLine?.isDiameter && (m.id.toString() === calcDiameterId || m.id.toString() === calcLengthId);
       const color = isSelected ? '#10b981' : '#ef4444';
 
       drawLine(m.start, m.end, color, 3);
       drawLabel(m.start, m.end, `${m.value.toFixed(2)} ${referenceLine?.unit}`, color);
     });
 
-    if (currentLine && scaleFactor) {
+    if (currentLine && scaleFactor && !paperCorners) {
       drawLine(currentLine.start, currentLine.end, '#ef4444', 3, true);
       const dist = getDistance(currentLine.start, currentLine.end);
       const val = dist / scaleFactor;
       drawLabel(currentLine.start, currentLine.end, `${val.toFixed(2)} ${referenceLine?.unit}`, '#ef4444');
     }
 
-  }, [image, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId]);
+  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners]);
 
 
   return (
@@ -462,11 +761,11 @@ const PhotoScaleApp = () => {
               </label>
             </div>
           ) : (
-            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: isDrawing ? 'crosshair' : 'crosshair' }}>
+            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : 'crosshair' }}>
                <canvas
                 ref={canvasRef}
-                width={image.naturalWidth}
-                height={image.naturalHeight}
+                width={correctedImage ? correctedImage.naturalWidth : image.naturalWidth}
+                height={correctedImage ? correctedImage.naturalHeight : image.naturalHeight}
                 style={{
                     maxWidth: '100%',
                     maxHeight: '80vh',
@@ -481,15 +780,25 @@ const PhotoScaleApp = () => {
                 onTouchMove={draw}
                 onTouchEnd={endDrawing}
               />
-              {!referenceLine && !inputModalOpen && !measurements.length && (
+              {!referenceLine && !inputModalOpen && !measurements.length && !paperCorners && !correctedImage && (
                 <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-blue-900/80 backdrop-blur text-white px-4 py-2 rounded-full text-sm font-medium pointer-events-none animate-pulse">
                   Draw line manually OR use Auto-Detect
                 </div>
               )}
-              {isProcessing && (
+              {paperCorners && (
+                <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-emerald-900/80 backdrop-blur text-white px-4 py-2 rounded-full text-sm font-medium pointer-events-none">
+                  Drag corners to adjust, then click Apply
+                </div>
+              )}
+              {correctedImage && !referenceLine && (
+                <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-emerald-600/90 backdrop-blur text-white px-4 py-2 rounded-full text-sm font-medium pointer-events-none">
+                  ✓ Perspective corrected — Draw to measure
+                </div>
+              )}
+              {(isProcessing || isDetectingPaper) && (
                   <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex flex-col items-center justify-center text-blue-800 z-50">
                       <Loader2 size={48} className="animate-spin mb-2" />
-                      <span className="font-semibold">Detecting Drill Shape...</span>
+                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : 'Detecting Drill Shape...'}</span>
                   </div>
               )}
             </div>
@@ -497,6 +806,71 @@ const PhotoScaleApp = () => {
         </div>
 
         <div className="w-80 bg-white border-l border-gray-200 flex flex-col z-10 shadow-xl overflow-hidden">
+
+            {/* Perspective Correction Panel */}
+            <div className="p-4 bg-emerald-50 border-b border-emerald-100 relative">
+                {correctedImage && (
+                    <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center">
+                        <button
+                            onClick={resetPerspective}
+                            className="text-xs font-semibold text-white bg-emerald-500 hover:bg-emerald-600 px-3 py-1.5 rounded shadow-sm border border-emerald-600 transition flex items-center gap-1"
+                        >
+                            <RefreshCcw size={12} />
+                            Reset Correction
+                        </button>
+                    </div>
+                )}
+                <h2 className="text-sm font-bold text-emerald-900 mb-3 flex items-center gap-2">
+                    <FileImage size={16} /> Perspective Correction
+                </h2>
+
+                <div className="space-y-2">
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-emerald-400 mb-0.5 block">Paper Size</label>
+                        <select
+                            value={paperSize}
+                            onChange={(e) => setPaperSize(e.target.value)}
+                            className="w-full text-sm px-2 py-1.5 rounded-md border border-emerald-200 focus:ring-1 focus:ring-emerald-500 outline-none bg-white"
+                            disabled={!!correctedImage}
+                        >
+                            {Object.entries(PAPER_SIZES).map(([key, val]) => (
+                                <option key={key} value={key}>{val.label}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div className="flex gap-2">
+                        <button
+                            onClick={detectPaper}
+                            disabled={!image || !cvReady || !!correctedImage || isDetectingPaper}
+                            className="flex-1 h-[34px] px-3 bg-emerald-600 text-white rounded-md text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                        >
+                            {isDetectingPaper ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
+                            {paperCorners ? 'Re-detect' : 'Detect Paper'}
+                        </button>
+
+                        {paperCorners && (
+                            <button
+                                onClick={applyPerspectiveCorrection}
+                                disabled={isDetectingPaper}
+                                className="flex-1 h-[34px] px-3 bg-emerald-700 text-white rounded-md text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                            >
+                                <Check size={14} />
+                                Apply
+                            </button>
+                        )}
+                    </div>
+
+                    {paperCorners && (
+                        <p className="text-[10px] text-emerald-600 flex items-center gap-1">
+                            <Move size={10} />
+                            Drag corners to adjust, then click Apply
+                        </p>
+                    )}
+                </div>
+
+                {!cvReady && <p className="text-[10px] text-gray-400 mt-1">Initializing Computer Vision Engine...</p>}
+            </div>
 
             {/* Auto Detect Panel */}
             <div className="p-4 bg-indigo-50 border-b border-indigo-100 relative">
