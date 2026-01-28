@@ -41,6 +41,11 @@ const PhotoScaleApp = () => {
   const [paperSize, setPaperSize] = useState('a4'); // 'a4', 'letter', 'custom'
   const [isDetectingPaper, setIsDetectingPaper] = useState(false);
   const [draggingCorner, setDraggingCorner] = useState(null); // Index of corner being dragged
+  const [showGrid, setShowGrid] = useState(true); // Show perspective grid overlay
+
+  // Object Detection State
+  const [detectedObject, setDetectedObject] = useState(null); // { rect: {x,y,width,height,angle}, heightMm, widthMm }
+  const [isDetectingObject, setIsDetectingObject] = useState(false);
 
   // Paper size definitions in mm
   const PAPER_SIZES = {
@@ -240,39 +245,147 @@ const PhotoScaleApp = () => {
         const gray = new cv.Mat();
         const blurred = new cv.Mat();
         const edges = new cv.Mat();
+        const dilated = new cv.Mat();
+        const hsv = new cv.Mat();
+        const whiteMask = new cv.Mat();
+        const maskedGray = new cv.Mat();
 
-        // 1. Convert to grayscale
+        // 1. Create a mask for white/light colored regions (paper detection)
+        cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+        cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+
+        // White/light paper: very lenient to include shadowed areas
+        // saturation < 100, value > 80
+        const lowWhite = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 80, 0]);
+        const highWhite = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 100, 255, 0]);
+        cv.inRange(hsv, lowWhite, highWhite, whiteMask);
+        lowWhite.delete();
+        highWhite.delete();
+
+        // Morphological operations to clean up the mask - larger kernel to fill gaps from marker
+        const maskKernel = cv.Mat.ones(15, 15, cv.CV_8U);
+        // Close holes (multiple iterations to fill larger gaps)
+        cv.morphologyEx(whiteMask, whiteMask, cv.MORPH_CLOSE, maskKernel, new cv.Point(-1, -1), 3);
+        // Open to remove noise
+        cv.morphologyEx(whiteMask, whiteMask, cv.MORPH_OPEN, maskKernel);
+        maskKernel.delete();
+
+        // 2. Convert to grayscale
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
 
-        // 2. Apply Gaussian blur to reduce noise
-        cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+        // 3. Apply the white mask to focus on paper region
+        cv.bitwise_and(gray, whiteMask, maskedGray);
 
-        // 3. Canny edge detection
-        cv.Canny(blurred, edges, 75, 200);
+        // 4. Apply stronger Gaussian blur to reduce texture noise (wood grain, etc.)
+        cv.GaussianBlur(maskedGray, blurred, new cv.Size(9, 9), 0);
 
-        // 4. Find contours
-        const contours = new cv.MatVector();
-        const hierarchy = new cv.Mat();
-        cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-
-        // 5. Find the largest 4-sided contour (the paper)
-        let maxArea = 0;
+        // Try multiple detection strategies
         let paperContour = null;
+        let maxArea = 0;
 
-        for (let i = 0; i < contours.size(); i++) {
-          const cnt = contours.get(i);
-          const peri = cv.arcLength(cnt, true);
-          const approx = new cv.Mat();
-          cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+        // STRATEGY 0: Find contours directly on the white mask (most reliable for white paper)
+        {
+          const contours = new cv.MatVector();
+          const hierarchy = new cv.Mat();
+          cv.findContours(whiteMask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-          // Check if it's a quadrilateral with significant area
-          if (approx.rows === 4) {
-            const area = cv.contourArea(cnt);
-            if (area > maxArea && area > (src.rows * src.cols * 0.05)) {
-              maxArea = area;
-              paperContour = approx;
+          for (let i = 0; i < contours.size(); i++) {
+            const cnt = contours.get(i);
+            const peri = cv.arcLength(cnt, true);
+            const approx = new cv.Mat();
+            cv.approxPolyDP(cnt, approx, 0.02 * peri, true);
+
+            if (approx.rows === 4) {
+              const area = cv.contourArea(cnt);
+              if (area > maxArea && area > (src.rows * src.cols * 0.02)) {
+                const pts = [];
+                for (let j = 0; j < 4; j++) {
+                  pts.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
+                }
+                const width1 = Math.sqrt(Math.pow(pts[0].x - pts[1].x, 2) + Math.pow(pts[0].y - pts[1].y, 2));
+                const width2 = Math.sqrt(Math.pow(pts[2].x - pts[3].x, 2) + Math.pow(pts[2].y - pts[3].y, 2));
+                const height1 = Math.sqrt(Math.pow(pts[1].x - pts[2].x, 2) + Math.pow(pts[1].y - pts[2].y, 2));
+                const height2 = Math.sqrt(Math.pow(pts[3].x - pts[0].x, 2) + Math.pow(pts[3].y - pts[0].y, 2));
+                const avgWidth = (width1 + width2) / 2;
+                const avgHeight = (height1 + height2) / 2;
+                const aspectRatio = avgWidth / avgHeight;
+
+                if (aspectRatio > 0.3 && aspectRatio < 3.0) {
+                  maxArea = area;
+                  paperContour = approx;
+                }
+              }
             }
           }
+          contours.delete();
+          hierarchy.delete();
+        }
+
+        // Strategy configs: [cannyLow, cannyHigh, dilateIterations, approxEpsilon]
+        const strategies = [
+          [30, 100, 2, 0.02],   // Lower thresholds with dilation
+          [50, 150, 1, 0.02],   // Medium thresholds with some dilation
+          [20, 80, 3, 0.03],    // Very low thresholds with more dilation
+          [75, 200, 0, 0.02],   // Original strategy (fallback)
+        ];
+
+        for (const [cannyLow, cannyHigh, dilateIter, epsilon] of strategies) {
+          if (paperContour) break;
+
+          // 3. Canny edge detection
+          cv.Canny(blurred, edges, cannyLow, cannyHigh);
+
+          // 4. Dilate to connect broken edges
+          if (dilateIter > 0) {
+            const kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+            cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), dilateIter);
+            kernel.delete();
+          } else {
+            edges.copyTo(dilated);
+          }
+
+          // 5. Find contours
+          const contours = new cv.MatVector();
+          const hierarchy = new cv.Mat();
+          cv.findContours(dilated, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+          // 6. Find the largest 4-sided contour (the paper)
+          for (let i = 0; i < contours.size(); i++) {
+            const cnt = contours.get(i);
+            const peri = cv.arcLength(cnt, true);
+            const approx = new cv.Mat();
+            cv.approxPolyDP(cnt, approx, epsilon * peri, true);
+
+            // Check if it's a quadrilateral with significant area (lowered to 2%)
+            if (approx.rows === 4) {
+              const area = cv.contourArea(cnt);
+              if (area > maxArea && area > (src.rows * src.cols * 0.02)) {
+                // Additional check: make sure it's roughly rectangular (not too skewed)
+                const pts = [];
+                for (let j = 0; j < 4; j++) {
+                  pts.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
+                }
+
+                // Check aspect ratio is reasonable (between 0.3 and 3.0)
+                const width1 = Math.sqrt(Math.pow(pts[0].x - pts[1].x, 2) + Math.pow(pts[0].y - pts[1].y, 2));
+                const width2 = Math.sqrt(Math.pow(pts[2].x - pts[3].x, 2) + Math.pow(pts[2].y - pts[3].y, 2));
+                const height1 = Math.sqrt(Math.pow(pts[1].x - pts[2].x, 2) + Math.pow(pts[1].y - pts[2].y, 2));
+                const height2 = Math.sqrt(Math.pow(pts[3].x - pts[0].x, 2) + Math.pow(pts[3].y - pts[0].y, 2));
+
+                const avgWidth = (width1 + width2) / 2;
+                const avgHeight = (height1 + height2) / 2;
+                const aspectRatio = avgWidth / avgHeight;
+
+                if (aspectRatio > 0.3 && aspectRatio < 3.0) {
+                  maxArea = area;
+                  paperContour = approx;
+                }
+              }
+            }
+          }
+
+          contours.delete();
+          hierarchy.delete();
         }
 
         if (paperContour) {
@@ -289,7 +402,7 @@ const PhotoScaleApp = () => {
           const orderedCorners = orderCorners(points);
           setPaperCorners(orderedCorners);
         } else {
-          alert("Could not detect paper. Ensure the paper has clear edges against the background.");
+          alert("Could not detect paper. Try adjusting paper position or manually drag corners after clicking 'Detect Paper' again.");
         }
 
         // Cleanup
@@ -297,8 +410,10 @@ const PhotoScaleApp = () => {
         gray.delete();
         blurred.delete();
         edges.delete();
-        contours.delete();
-        hierarchy.delete();
+        dilated.delete();
+        hsv.delete();
+        whiteMask.delete();
+        maskedGray.delete();
 
       } catch (e) {
         console.error(e);
@@ -403,11 +518,215 @@ const PhotoScaleApp = () => {
     setReferenceLine(null);
     setScaleFactor(null);
     setMeasurements([]);
+    setDetectedObject(null);
+  };
+
+  // Calibrate scale from paper corners without applying perspective correction
+  const calibrateFromPaper = () => {
+    if (!paperCorners) return;
+
+    const paper = PAPER_SIZES[paperSize];
+
+    // Calculate paper dimensions in pixels from detected corners
+    // Top edge: TL to TR
+    const topEdgePx = getDistance(paperCorners[0], paperCorners[1]);
+    // Bottom edge: BL to BR
+    const bottomEdgePx = getDistance(paperCorners[3], paperCorners[2]);
+    // Left edge: TL to BL
+    const leftEdgePx = getDistance(paperCorners[0], paperCorners[3]);
+    // Right edge: TR to BR
+    const rightEdgePx = getDistance(paperCorners[1], paperCorners[2]);
+
+    // Average width and height in pixels
+    const avgWidthPx = (topEdgePx + bottomEdgePx) / 2;
+    const avgHeightPx = (leftEdgePx + rightEdgePx) / 2;
+
+    // Calculate pixels per mm (average of horizontal and vertical)
+    const pxPerMmWidth = avgWidthPx / paper.width;
+    const pxPerMmHeight = avgHeightPx / paper.height;
+    const avgPxPerMm = (pxPerMmWidth + pxPerMmHeight) / 2;
+
+    setScaleFactor(avgPxPerMm);
+    setReferenceLine({
+      start: paperCorners[0],
+      end: paperCorners[1],
+      realLength: paper.width,
+      unit: 'mm',
+      isDiameter: false
+    });
+
+    // Clear paper corners overlay but keep the scale
+    setPaperCorners(null);
+  };
+
+  // --- CV Logic: Detect Object ---
+  const detectObject = () => {
+    if (!window.cv || !cvReady || !image) return;
+    // Need either corrected image OR calibrated scale from paper
+    if (!correctedImage && !scaleFactor) return;
+    setIsDetectingObject(true);
+
+    setTimeout(() => {
+      try {
+        const cv = window.cv;
+        const src = cv.imread(canvasRef.current);
+        const hsv = new cv.Mat();
+        const objectMask = new cv.Mat();
+
+        // Convert to HSV
+        cv.cvtColor(src, hsv, cv.COLOR_RGBA2RGB);
+        cv.cvtColor(hsv, hsv, cv.COLOR_RGB2HSV);
+
+        // Find non-white regions (objects on paper)
+        // White: low saturation, high value. Object: NOT white
+        const lowWhite = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 0, 180, 0]);
+        const highWhite = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 40, 255, 0]);
+        cv.inRange(hsv, lowWhite, highWhite, objectMask);
+        lowWhite.delete();
+        highWhite.delete();
+
+        // Invert: we want the object (non-white)
+        cv.bitwise_not(objectMask, objectMask);
+
+        // Clean up mask
+        const kernel = cv.Mat.ones(5, 5, cv.CV_8U);
+        cv.morphologyEx(objectMask, objectMask, cv.MORPH_OPEN, kernel);
+        cv.morphologyEx(objectMask, objectMask, cv.MORPH_CLOSE, kernel);
+        kernel.delete();
+
+        // Find contours
+        const contours = new cv.MatVector();
+        const hierarchy = new cv.Mat();
+        cv.findContours(objectMask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        // Find largest contour
+        let maxArea = 0;
+        let maxContour = null;
+
+        for (let i = 0; i < contours.size(); i++) {
+          const cnt = contours.get(i);
+          const area = cv.contourArea(cnt);
+          // Filter small noise (minimum 100 pixels)
+          if (area > maxArea && area > 100) {
+            maxArea = area;
+            maxContour = cnt;
+          }
+        }
+
+        if (maxContour) {
+          // Get rotated bounding rectangle
+          const rect = cv.minAreaRect(maxContour);
+
+          // Calculate dimensions in mm (scale = 3 px/mm from perspective correction)
+          const scale = scaleFactor || 3; // pixels per mm
+          const widthMm = Math.min(rect.size.width, rect.size.height) / scale;
+          const heightMm = Math.max(rect.size.width, rect.size.height) / scale;
+
+          // Get corner points of the rotated rect
+          const vertices = cv.RotatedRect.points(rect);
+
+          setDetectedObject({
+            center: { x: rect.center.x, y: rect.center.y },
+            size: { width: rect.size.width, height: rect.size.height },
+            angle: rect.angle,
+            vertices: vertices,
+            widthMm: widthMm,
+            heightMm: heightMm
+          });
+        } else {
+          alert("No object detected on paper.");
+          setDetectedObject(null);
+        }
+
+        // Cleanup
+        src.delete();
+        hsv.delete();
+        objectMask.delete();
+        contours.delete();
+        hierarchy.delete();
+
+      } catch (e) {
+        console.error(e);
+        alert("Error detecting object.");
+      }
+      setIsDetectingObject(false);
+    }, 100);
   };
 
   // --- Geometry Helpers ---
   const getDistance = (p1, p2) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+  };
+
+  // --- Homography Utilities (for grid projection) ---
+  const solveLinearSystem = (A, b) => {
+    const n = A.length;
+    const M = A.map((row, i) => [...row, b[i]]);
+
+    for (let i = 0; i < n; i++) {
+      let pivotRow = i;
+      for (let j = i + 1; j < n; j++) {
+        if (Math.abs(M[j][i]) > Math.abs(M[pivotRow][i])) pivotRow = j;
+      }
+      const temp = M[i];
+      M[i] = M[pivotRow];
+      M[pivotRow] = temp;
+
+      if (Math.abs(M[i][i]) < 1e-12) return null;
+
+      const pivot = M[i][i];
+      for (let j = i; j <= n; j++) M[i][j] /= pivot;
+
+      for (let k = 0; k < n; k++) {
+        if (k !== i) {
+          const factor = M[k][i];
+          for (let j = i; j <= n; j++) M[k][j] -= factor * M[i][j];
+        }
+      }
+    }
+    return M.map(row => row[n]);
+  };
+
+  const computeHomography = (srcPoints, dstPoints) => {
+    if (srcPoints.length !== 4 || dstPoints.length !== 4) return null;
+    const A = [];
+    const b = [];
+    for (let i = 0; i < 4; i++) {
+      const sx = srcPoints[i].x;
+      const sy = srcPoints[i].y;
+      const dx = dstPoints[i].x;
+      const dy = dstPoints[i].y;
+      A.push([sx, sy, 1, 0, 0, 0, -sx * dx, -sy * dx]);
+      b.push(dx);
+      A.push([0, 0, 0, sx, sy, 1, -sx * dy, -sy * dy]);
+      b.push(dy);
+    }
+    const h = solveLinearSystem(A, b);
+    if (!h) return null;
+    return [[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1]];
+  };
+
+  const applyHomography = (H, p) => {
+    const rho = H[2][0] * p.x + H[2][1] * p.y + H[2][2];
+    return {
+      x: (H[0][0] * p.x + H[0][1] * p.y + H[0][2]) / rho,
+      y: (H[1][0] * p.x + H[1][1] * p.y + H[1][2]) / rho
+    };
+  };
+
+  const applyInverseHomography = (H, p) => {
+    const det = (
+      H[0][0] * (H[1][1] * H[2][2] - H[1][2] * H[2][1]) -
+      H[0][1] * (H[1][0] * H[2][2] - H[1][2] * H[2][0]) +
+      H[0][2] * (H[1][0] * H[2][1] - H[1][1] * H[2][0])
+    );
+    if (Math.abs(det) < 1e-12) return null;
+    const invH = [
+      [(H[1][1] * H[2][2] - H[1][2] * H[2][1]) / det, (H[0][2] * H[2][1] - H[0][1] * H[2][2]) / det, (H[0][1] * H[1][2] - H[0][2] * H[1][1]) / det],
+      [(H[1][2] * H[2][0] - H[1][0] * H[2][2]) / det, (H[0][0] * H[2][2] - H[0][2] * H[2][0]) / det, (H[0][2] * H[1][0] - H[0][0] * H[1][2]) / det],
+      [(H[1][0] * H[2][1] - H[1][1] * H[2][0]) / det, (H[0][1] * H[2][0] - H[0][0] * H[2][1]) / det, (H[0][0] * H[1][1] - H[0][1] * H[1][0]) / det]
+    ];
+    return applyHomography(invH, p);
   };
 
   const getCanvasCoordinates = (e) => {
@@ -703,6 +1022,52 @@ const PhotoScaleApp = () => {
         ctx.textBaseline = 'middle';
         ctx.fillText(cornerLabels[idx], corner.x, corner.y);
       });
+
+      // Draw perspective grid overlay
+      if (showGrid) {
+        const paper = PAPER_SIZES[paperSize];
+        const worldCorners = [
+          { x: 0, y: 0 },
+          { x: paper.width, y: 0 },
+          { x: paper.width, y: paper.height },
+          { x: 0, y: paper.height }
+        ];
+
+        const H = computeHomography(
+          paperCorners.map(c => ({ x: c.x, y: c.y })),
+          worldCorners
+        );
+
+        if (H) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
+          ctx.lineWidth = 1;
+          const gridCount = 10;
+
+          for (let i = 0; i <= gridCount; i++) {
+            // Vertical lines
+            const p1 = applyInverseHomography(H, { x: i * paper.width / gridCount, y: 0 });
+            const p2 = applyInverseHomography(H, { x: i * paper.width / gridCount, y: paper.height });
+            if (p1 && p2) {
+              ctx.beginPath();
+              ctx.moveTo(p1.x, p1.y);
+              ctx.lineTo(p2.x, p2.y);
+              ctx.stroke();
+            }
+
+            // Horizontal lines
+            const q1 = applyInverseHomography(H, { x: 0, y: i * paper.height / gridCount });
+            const q2 = applyInverseHomography(H, { x: paper.width, y: i * paper.height / gridCount });
+            if (q1 && q2) {
+              ctx.beginPath();
+              ctx.moveTo(q1.x, q1.y);
+              ctx.lineTo(q2.x, q2.y);
+              ctx.stroke();
+            }
+          }
+          ctx.restore();
+        }
+      }
     }
 
     if (referenceLine && !paperCorners) {
@@ -729,7 +1094,62 @@ const PhotoScaleApp = () => {
       drawLabel(currentLine.start, currentLine.end, `${val.toFixed(2)} ${referenceLine?.unit}`, '#ef4444');
     }
 
-  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners]);
+    // Draw detected object bounding box
+    if (detectedObject && detectedObject.vertices) {
+      ctx.save();
+      ctx.strokeStyle = '#f59e0b'; // Amber
+      ctx.lineWidth = 3;
+      ctx.setLineDash([]);
+
+      // Draw rotated rectangle
+      ctx.beginPath();
+      ctx.moveTo(detectedObject.vertices[0].x, detectedObject.vertices[0].y);
+      for (let i = 1; i < 4; i++) {
+        ctx.lineTo(detectedObject.vertices[i].x, detectedObject.vertices[i].y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+
+      // Draw corner dots
+      ctx.fillStyle = '#f59e0b';
+      detectedObject.vertices.forEach(v => {
+        ctx.beginPath();
+        ctx.arc(v.x, v.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Draw dimension labels
+      const v = detectedObject.vertices;
+      const midTop = { x: (v[0].x + v[1].x) / 2, y: (v[0].y + v[1].y) / 2 };
+      const midLeft = { x: (v[0].x + v[3].x) / 2, y: (v[0].y + v[3].y) / 2 };
+
+      // Height label (longer dimension)
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.9)';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const heightLabel = `${detectedObject.heightMm.toFixed(1)}mm`;
+      const widthLabel = `${detectedObject.widthMm.toFixed(1)}mm`;
+
+      // Draw height label with background
+      const heightMetrics = ctx.measureText(heightLabel);
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(midLeft.x - heightMetrics.width/2 - 4, midLeft.y - 10, heightMetrics.width + 8, 20);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText(heightLabel, midLeft.x, midLeft.y);
+
+      // Draw width label with background
+      const widthMetrics = ctx.measureText(widthLabel);
+      ctx.fillStyle = 'rgba(0,0,0,0.7)';
+      ctx.fillRect(midTop.x - widthMetrics.width/2 - 4, midTop.y - 10, widthMetrics.width + 8, 20);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillText(widthLabel, midTop.x, midTop.y);
+
+      ctx.restore();
+    }
+
+  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize]);
 
 
   return (
@@ -787,7 +1207,7 @@ const PhotoScaleApp = () => {
               )}
               {paperCorners && (
                 <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-emerald-900/80 backdrop-blur text-white px-4 py-2 rounded-full text-sm font-medium pointer-events-none">
-                  Drag corners to adjust, then click Apply
+                  Drag corners to adjust → Calibrate (upright) or Flatten (flat)
                 </div>
               )}
               {correctedImage && !referenceLine && (
@@ -809,29 +1229,19 @@ const PhotoScaleApp = () => {
 
             {/* Perspective Correction Panel */}
             <div className="p-4 bg-emerald-50 border-b border-emerald-100 relative">
-                {correctedImage && (
-                    <div className="absolute inset-0 bg-white/60 backdrop-blur-[1px] z-10 flex items-center justify-center">
-                        <button
-                            onClick={resetPerspective}
-                            className="text-xs font-semibold text-white bg-emerald-500 hover:bg-emerald-600 px-3 py-1.5 rounded shadow-sm border border-emerald-600 transition flex items-center gap-1"
-                        >
-                            <RefreshCcw size={12} />
-                            Reset Correction
-                        </button>
-                    </div>
-                )}
                 <h2 className="text-sm font-bold text-emerald-900 mb-3 flex items-center gap-2">
                     <FileImage size={16} /> Perspective Correction
                 </h2>
 
-                <div className="space-y-2">
+                {/* State 1: No calibration yet - show paper detection */}
+                {!correctedImage && !scaleFactor && (
+                  <div className="space-y-2">
                     <div>
                         <label className="text-[10px] uppercase font-bold text-emerald-400 mb-0.5 block">Paper Size</label>
                         <select
                             value={paperSize}
                             onChange={(e) => setPaperSize(e.target.value)}
                             className="w-full text-sm px-2 py-1.5 rounded-md border border-emerald-200 focus:ring-1 focus:ring-emerald-500 outline-none bg-white"
-                            disabled={!!correctedImage}
                         >
                             {Object.entries(PAPER_SIZES).map(([key, val]) => (
                                 <option key={key} value={key}>{val.label}</option>
@@ -842,7 +1252,7 @@ const PhotoScaleApp = () => {
                     <div className="flex gap-2">
                         <button
                             onClick={detectPaper}
-                            disabled={!image || !cvReady || !!correctedImage || isDetectingPaper}
+                            disabled={!image || !cvReady || isDetectingPaper}
                             className="flex-1 h-[34px] px-3 bg-emerald-600 text-white rounded-md text-xs font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                         >
                             {isDetectingPaper ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
@@ -850,24 +1260,139 @@ const PhotoScaleApp = () => {
                         </button>
 
                         {paperCorners && (
-                            <button
-                                onClick={applyPerspectiveCorrection}
-                                disabled={isDetectingPaper}
-                                className="flex-1 h-[34px] px-3 bg-emerald-700 text-white rounded-md text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
-                            >
-                                <Check size={14} />
-                                Apply
-                            </button>
+                            <>
+                                <button
+                                    onClick={calibrateFromPaper}
+                                    disabled={isDetectingPaper}
+                                    className="flex-1 h-[34px] px-3 bg-amber-500 text-white rounded-md text-xs font-semibold hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                                    title="Set scale from paper without cropping - use for upright objects"
+                                >
+                                    <Ruler size={14} />
+                                    Calibrate
+                                </button>
+                                <button
+                                    onClick={applyPerspectiveCorrection}
+                                    disabled={isDetectingPaper}
+                                    className="flex-1 h-[34px] px-3 bg-emerald-700 text-white rounded-md text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                                    title="Flatten perspective - use for objects lying ON the paper"
+                                >
+                                    <Check size={14} />
+                                    Flatten
+                                </button>
+                            </>
                         )}
                     </div>
 
                     {paperCorners && (
-                        <p className="text-[10px] text-emerald-600 flex items-center gap-1">
-                            <Move size={10} />
-                            Drag corners to adjust, then click Apply
-                        </p>
+                        <div className="text-[10px] text-emerald-600 space-y-1">
+                            <p className="flex items-center gap-1">
+                                <Move size={10} />
+                                Drag corners to adjust
+                            </p>
+                            <p><strong>Calibrate:</strong> For upright objects (keeps full image)</p>
+                            <p><strong>Flatten:</strong> For objects lying on paper</p>
+                            <label className="flex items-center gap-2 mt-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={showGrid}
+                                    onChange={(e) => setShowGrid(e.target.checked)}
+                                    className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
+                                />
+                                <span>Show perspective grid</span>
+                            </label>
+                        </div>
                     )}
-                </div>
+                  </div>
+                )}
+
+                {/* State 2: Calibrated from paper (no correction applied) */}
+                {!correctedImage && scaleFactor && (
+                  <div className="space-y-3">
+                    <div className="bg-amber-100 rounded-lg p-2 text-xs text-amber-700 flex items-center gap-2">
+                        <Check size={14} />
+                        Scale calibrated from {PAPER_SIZES[paperSize].label}
+                        <span className="ml-auto font-mono">{scaleFactor.toFixed(2)} px/mm</span>
+                    </div>
+
+                    <button
+                        onClick={detectObject}
+                        disabled={isDetectingObject}
+                        className="w-full h-[34px] px-3 bg-amber-500 text-white rounded-md text-xs font-semibold hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                        {isDetectingObject ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
+                        Detect Object
+                    </button>
+
+                    {detectedObject && (
+                        <div className="bg-white rounded-lg p-3 border border-amber-200">
+                            <div className="text-[10px] uppercase font-bold text-amber-600 mb-2">Detected Object</div>
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                                <div>
+                                    <span className="text-gray-500 text-xs">Height:</span>
+                                    <div className="font-mono font-bold text-amber-700">{detectedObject.heightMm.toFixed(1)} mm</div>
+                                </div>
+                                <div>
+                                    <span className="text-gray-500 text-xs">Width:</span>
+                                    <div className="font-mono font-bold text-amber-700">{detectedObject.widthMm.toFixed(1)} mm</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <p className="text-[10px] text-gray-500">Or draw lines manually to measure</p>
+
+                    <button
+                        onClick={resetPerspective}
+                        className="w-full text-xs text-emerald-600 hover:text-emerald-800 flex items-center justify-center gap-1"
+                    >
+                        <RefreshCcw size={12} />
+                        Reset Calibration
+                    </button>
+                  </div>
+                )}
+
+                {/* State 3: Perspective corrected (flattened) */}
+                {correctedImage && (
+                  <div className="space-y-3">
+                    <div className="bg-emerald-100 rounded-lg p-2 text-xs text-emerald-700 flex items-center gap-2">
+                        <Check size={14} />
+                        Paper corrected ({PAPER_SIZES[paperSize].label})
+                    </div>
+
+                    <button
+                        onClick={detectObject}
+                        disabled={isDetectingObject}
+                        className="w-full h-[34px] px-3 bg-amber-500 text-white rounded-md text-xs font-semibold hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                        {isDetectingObject ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
+                        Detect Object
+                    </button>
+
+                    {detectedObject && (
+                        <div className="bg-white rounded-lg p-3 border border-amber-200">
+                            <div className="text-[10px] uppercase font-bold text-amber-600 mb-2">Detected Object</div>
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                                <div>
+                                    <span className="text-gray-500 text-xs">Height:</span>
+                                    <div className="font-mono font-bold text-amber-700">{detectedObject.heightMm.toFixed(1)} mm</div>
+                                </div>
+                                <div>
+                                    <span className="text-gray-500 text-xs">Width:</span>
+                                    <div className="font-mono font-bold text-amber-700">{detectedObject.widthMm.toFixed(1)} mm</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <button
+                        onClick={resetPerspective}
+                        className="w-full text-xs text-emerald-600 hover:text-emerald-800 flex items-center justify-center gap-1"
+                    >
+                        <RefreshCcw size={12} />
+                        Reset Correction
+                    </button>
+                  </div>
+                )}
 
                 {!cvReady && <p className="text-[10px] text-gray-400 mt-1">Initializing Computer Vision Engine...</p>}
             </div>
@@ -996,61 +1521,61 @@ const PhotoScaleApp = () => {
                         </div>
                     </div>
                 ))}
+
+                {referenceLine && !referenceLine.isDiameter && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mt-3">
+                        <h3 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
+                            <Calculator size={16} /> Surface Area (Manual)
+                        </h3>
+
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                                 <label className="text-xs font-medium text-gray-600 w-16">Diameter:</label>
+                                 <select
+                                    value={calcDiameterId}
+                                    onChange={(e) => setCalcDiameterId(e.target.value)}
+                                    className="flex-1 text-sm border-gray-200 rounded-md py-1 px-2 text-gray-700 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                 >
+                                    <option value="">Select...</option>
+                                    {measurements.map((m, i) => (
+                                        <option key={m.id} value={m.id}>#{i+1}: {m.value.toFixed(1)}</option>
+                                    ))}
+                                 </select>
+                            </div>
+
+                            <div className="flex items-center justify-between gap-2">
+                                 <label className="text-xs font-medium text-gray-600 w-16">Length:</label>
+                                 <select
+                                    value={calcLengthId}
+                                    onChange={(e) => setCalcLengthId(e.target.value)}
+                                    className="flex-1 text-sm border-gray-200 rounded-md py-1 px-2 text-gray-700 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                                 >
+                                    <option value="">Select...</option>
+                                    {measurements.map((m, i) => (
+                                        <option key={m.id} value={m.id}>#{i+1}: {m.value.toFixed(1)}</option>
+                                    ))}
+                                 </select>
+                            </div>
+
+                            {calcDiameterId && calcLengthId ? (
+                                 <div className="mt-3 bg-white rounded-lg p-3 text-center border border-emerald-200 shadow-sm ring-1 ring-emerald-500/20">
+                                    <div className="text-xs text-emerald-600 uppercase tracking-wide font-semibold mb-1">Surface Area</div>
+                                    <div className="text-xl font-bold text-emerald-900">
+                                        {calculateManualSurfaceArea()}
+                                        <span className="text-sm font-normal text-emerald-700 ml-1">{getAreaUnit(referenceLine.unit)}</span>
+                                    </div>
+                                 </div>
+                            ) : (
+                                 <div className="text-xs text-gray-400 text-center italic mt-2">
+                                    Select Diameter and Length above
+                                 </div>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
-            {referenceLine && !referenceLine.isDiameter && (
-                <div className="bg-gray-50 border-t border-gray-200 p-4">
-                    <h3 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
-                        <Calculator size={16} /> Surface Area (Manual)
-                    </h3>
-
-                    <div className="space-y-3">
-                        <div className="flex items-center justify-between gap-2">
-                             <label className="text-xs font-medium text-gray-600 w-16">Diameter:</label>
-                             <select
-                                value={calcDiameterId}
-                                onChange={(e) => setCalcDiameterId(e.target.value)}
-                                className="flex-1 text-sm border-gray-200 rounded-md py-1 px-2 text-gray-700 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                             >
-                                <option value="">Select...</option>
-                                {measurements.map((m, i) => (
-                                    <option key={m.id} value={m.id}>#{i+1}: {m.value.toFixed(1)}</option>
-                                ))}
-                             </select>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2">
-                             <label className="text-xs font-medium text-gray-600 w-16">Length:</label>
-                             <select
-                                value={calcLengthId}
-                                onChange={(e) => setCalcLengthId(e.target.value)}
-                                className="flex-1 text-sm border-gray-200 rounded-md py-1 px-2 text-gray-700 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                             >
-                                <option value="">Select...</option>
-                                {measurements.map((m, i) => (
-                                    <option key={m.id} value={m.id}>#{i+1}: {m.value.toFixed(1)}</option>
-                                ))}
-                             </select>
-                        </div>
-
-                        {calcDiameterId && calcLengthId ? (
-                             <div className="mt-3 bg-white rounded-lg p-3 text-center border border-emerald-200 shadow-sm ring-1 ring-emerald-500/20">
-                                <div className="text-xs text-emerald-600 uppercase tracking-wide font-semibold mb-1">Surface Area</div>
-                                <div className="text-xl font-bold text-emerald-900">
-                                    {calculateManualSurfaceArea()}
-                                    <span className="text-sm font-normal text-emerald-700 ml-1">{getAreaUnit(referenceLine.unit)}</span>
-                                </div>
-                             </div>
-                        ) : (
-                             <div className="text-xs text-gray-400 text-center italic mt-2">
-                                Select Diameter and Length above
-                             </div>
-                        )}
-                    </div>
-                </div>
-            )}
-
-            <div className="p-3 bg-gray-50 border-t border-gray-200 text-[10px] text-gray-400 flex gap-2">
+            <div className="p-3 bg-gray-50 border-t border-gray-200 text-[10px] text-gray-400 flex gap-2 shrink-0">
                 <Info size={14} className="shrink-0 text-gray-300"/>
                 <p>Ensure high contrast background for Auto-Detect.</p>
             </div>
