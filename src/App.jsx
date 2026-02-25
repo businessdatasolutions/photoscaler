@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Upload, Ruler, Trash2, RefreshCcw, Info, Check, AlertTriangle, Calculator, Cylinder, Crosshair, Loader2, Circle, FileImage, Move } from 'lucide-react';
+import { analyzeJigImage } from './geminiJig.js';
 
 // Track OpenCV loading state outside component to survive StrictMode double-mount
 let cvLoadingStarted = false;
@@ -57,6 +58,8 @@ const PhotoScaleApp = () => {
 
   // Base Line
   const [baseLine, setBaseLine] = useState(null);
+  // Processing status message for jig mode
+  const [jigProcessingMsg, setJigProcessingMsg] = useState('');
   // { y: Number, mmValue: Number }
 
   // Multi-Drill Results
@@ -70,14 +73,16 @@ const PhotoScaleApp = () => {
     mediumMax: 300,  // mm — below = B, above = C
   });
 
-  // Detection Tuning
-  const [jigDetectionParams, setJigDetectionParams] = useState({
-    minContourArea: 1000,
-    minAspectRatio: 3.0,
-    adaptiveBlockSize: 15,
-    adaptiveC: 5,
-    baseLineTolerance: 30,
-  });
+  // Base line dragging
+  const [draggingBaseLine, setDraggingBaseLine] = useState(false);
+  // Manual drill addition mode
+  const [jigAddingDrill, setJigAddingDrill] = useState(false);
+
+  // Gemini API key (env variable → localStorage → manual entry)
+  const [geminiApiKey, setGeminiApiKey] = useState(
+    () => import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || ''
+  );
+  const [geminiError, setGeminiError] = useState(null);
 
   // Paper size definitions in mm
   const PAPER_SIZES = {
@@ -685,6 +690,28 @@ const PhotoScaleApp = () => {
     }, 100);
   };
 
+  // --- Jig Mode: Gemini Analysis ---
+  const analyzeWithGemini = async () => {
+    if (!image || !geminiApiKey) return;
+    setIsProcessing(true);
+    setJigProcessingMsg('Analyzing with Gemini AI...');
+    setGeminiError(null);
+
+    try {
+      const result = await analyzeJigImage(geminiApiKey, image, categoryThresholds);
+      setXRuler(result.xRuler);
+      setYRuler(result.yRuler);
+      setBaseLine(result.baseLine);
+      setDetectedDrills(result.drills);
+    } catch (err) {
+      console.error('Gemini analysis error:', err);
+      setGeminiError(err.message);
+      alert('Gemini analysis failed: ' + err.message);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   // --- Geometry Helpers ---
   const getDistance = (p1, p2) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
@@ -813,6 +840,15 @@ const PhotoScaleApp = () => {
     // Don't allow drawing while corners are shown
     if (paperCorners) return;
 
+    // Jig mode: check if clicking near the base line for dragging
+    if (jigMode && baseLine && Math.abs(coords.y - baseLine.y) < 15) {
+      setDraggingBaseLine(true);
+      return;
+    }
+
+    // In jig mode, only allow drawing when in manual drill add mode
+    if (jigMode && !jigAddingDrill) return;
+
     setIsDrawing(true);
     setCurrentLine({ start: coords, end: coords });
   };
@@ -821,6 +857,17 @@ const PhotoScaleApp = () => {
     // Handle corner dragging
     if (draggingCorner !== null) {
       handleCornerDrag(e);
+      return;
+    }
+
+    // Handle base line dragging
+    if (draggingBaseLine) {
+      const coords = getCanvasCoordinates(e);
+      let mmValue = 0;
+      if (yRuler && yRuler.ticks.length >= 2) {
+        mmValue = (coords.y - yRuler.ticks[0].px) / yRuler.scalePxPerMm;
+      }
+      setBaseLine({ y: coords.y, mmValue });
       return;
     }
 
@@ -836,11 +883,65 @@ const PhotoScaleApp = () => {
       return;
     }
 
+    // End base line dragging — recalculate all drill heights
+    if (draggingBaseLine) {
+      setDraggingBaseLine(false);
+      if (detectedDrills.length > 0 && yRuler) {
+        setDetectedDrills(prev => prev.map(drill => {
+          const heightPx = baseLine.y - drill.topY;
+          const heightMm = heightPx / yRuler.scalePxPerMm;
+          const category = heightMm < categoryThresholds.shortMax ? 'A'
+            : heightMm < categoryThresholds.mediumMax ? 'B' : 'C';
+          return { ...drill, heightPx, heightMm, category };
+        }));
+      }
+      return;
+    }
+
     if (!isDrawing || !currentLine) return;
     setIsDrawing(false);
 
     const dist = getDistance(currentLine.start, currentLine.end);
     if (dist < 5) {
+      setCurrentLine(null);
+      return;
+    }
+
+    // Jig Mode: manual drill addition
+    if (jigMode && jigAddingDrill && yRuler && baseLine) {
+      const topY = Math.min(currentLine.start.y, currentLine.end.y);
+      const heightPx = baseLine.y - topY;
+      const heightMm = heightPx / yRuler.scalePxPerMm;
+
+      if (heightMm > 10) {
+        const category = heightMm < categoryThresholds.shortMax ? 'A'
+          : heightMm < categoryThresholds.mediumMax ? 'B' : 'C';
+        const centerX = (currentLine.start.x + currentLine.end.x) / 2;
+        const newDrill = {
+          id: detectedDrills.length + 1,
+          rect: null,
+          vertices: [
+            { x: centerX - 10, y: topY },
+            { x: centerX + 10, y: topY },
+            { x: centerX + 10, y: baseLine.y },
+            { x: centerX - 10, y: baseLine.y },
+          ],
+          topY,
+          bottomY: baseLine.y,
+          centerX,
+          heightPx,
+          heightMm,
+          category,
+        };
+
+        // Insert in sorted position and re-ID
+        const updated = [...detectedDrills, newDrill]
+          .sort((a, b) => a.centerX - b.centerX);
+        updated.forEach((d, i) => { d.id = i + 1; });
+        setDetectedDrills(updated);
+      }
+
+      setJigAddingDrill(false);
       setCurrentLine(null);
       return;
     }
@@ -914,14 +1015,10 @@ const PhotoScaleApp = () => {
     setBaseLine(null);
     setDetectedDrills([]);
     setSelectedDrillId(null);
+    setDraggingBaseLine(false);
+    setJigAddingDrill(false);
     setCategoryThresholds({ shortMax: 200, mediumMax: 300 });
-    setJigDetectionParams({
-      minContourArea: 1000,
-      minAspectRatio: 3.0,
-      adaptiveBlockSize: 15,
-      adaptiveC: 5,
-      baseLineTolerance: 30,
-    });
+    setGeminiError(null);
   };
 
   const resetStandardState = () => {
@@ -934,6 +1031,11 @@ const PhotoScaleApp = () => {
     setPaperCorners(null);
     setCorrectedImage(null);
     setDetectedObject(null);
+  };
+
+  const saveGeminiApiKey = (key) => {
+    setGeminiApiKey(key);
+    localStorage.setItem('gemini_api_key', key);
   };
 
   const toggleJigMode = (enabled) => {
@@ -981,6 +1083,17 @@ const PhotoScaleApp = () => {
   const calculateAutoSurfaceArea = (length) => {
       return (Math.PI * referenceLine.realLength * length).toFixed(2);
   };
+
+  // --- Re-categorize drills when thresholds change ---
+  useEffect(() => {
+    if (detectedDrills.length === 0) return;
+    setDetectedDrills(prev => prev.map(d => ({
+      ...d,
+      category: d.heightMm < categoryThresholds.shortMax ? 'A'
+        : d.heightMm < categoryThresholds.mediumMax ? 'B' : 'C'
+    })));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryThresholds]);
 
   // --- Rendering Loop ---
   useEffect(() => {
@@ -1220,7 +1333,126 @@ const PhotoScaleApp = () => {
       ctx.restore();
     }
 
-  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize]);
+    // --- Jig Mode Canvas Rendering ---
+    if (jigMode) {
+      ctx.save();
+
+      // Draw ruler lines
+      const drawRuler = (ruler, axis) => {
+        if (!ruler) return;
+        const { line, ticks } = ruler;
+
+        // Main ruler line
+        ctx.strokeStyle = '#06B6D4'; // cyan
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(line.start.x, line.start.y);
+        ctx.lineTo(line.end.x, line.end.y);
+        ctx.stroke();
+
+        // Tick marks
+        ticks.forEach((tick) => {
+          const tickLen = (tick.mm % 50 === 0) ? 16 : (tick.mm % 10 === 0) ? 10 : 6;
+          let tx, ty, tx2, ty2;
+
+          if (axis === 'x') {
+            tx = tick.px;
+            ty = line.start.y - tickLen;
+            tx2 = tick.px;
+            ty2 = line.start.y + tickLen;
+          } else {
+            tx = line.start.x - tickLen;
+            ty = tick.px;
+            tx2 = line.start.x + tickLen;
+            ty2 = tick.px;
+          }
+
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(tx2, ty2);
+          ctx.strokeStyle = '#06B6D4';
+          ctx.lineWidth = (tick.mm % 50 === 0) ? 2 : 1;
+          ctx.stroke();
+
+          // Labels every 5 cm (50 mm)
+          if (tick.mm % 50 === 0) {
+            const label = `${tick.mm / 10}`;
+            ctx.fillStyle = '#06B6D4';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            if (axis === 'x') {
+              ctx.fillText(label, tick.px, line.start.y - tickLen - 10);
+            } else {
+              ctx.fillText(label, line.start.x - tickLen - 14, tick.px);
+            }
+          }
+        });
+      };
+
+      drawRuler(xRuler, 'x');
+      drawRuler(yRuler, 'y');
+
+      // Draw base line
+      if (baseLine) {
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, baseLine.y);
+        ctx.lineTo(canvas.width, baseLine.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('BASE LINE', 10, baseLine.y - 4);
+      }
+
+      // Draw detected drills
+      const CATEGORY_COLORS = { A: '#3B82F6', B: '#F59E0B', C: '#EF4444' };
+
+      detectedDrills.forEach((drill) => {
+        const isSelected = selectedDrillId === drill.id;
+        const color = isSelected ? '#22C55E' : CATEGORY_COLORS[drill.category];
+
+        // Draw bounding box
+        if (drill.vertices && drill.vertices.length === 4) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = isSelected ? 3 : 2;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(drill.vertices[0].x, drill.vertices[0].y);
+          for (let i = 1; i < 4; i++) {
+            ctx.lineTo(drill.vertices[i].x, drill.vertices[i].y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+
+        // Draw label above drill
+        const label = `#${drill.id}: ${Math.round(drill.heightMm)}mm (${drill.category})`;
+        ctx.font = 'bold 12px sans-serif';
+        const metrics = ctx.measureText(label);
+        const labelX = drill.centerX - metrics.width / 2 - 4;
+        const labelY = drill.topY - 22;
+
+        ctx.fillStyle = color;
+        ctx.fillRect(labelX, labelY, metrics.width + 8, 18);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, drill.centerX, labelY + 9);
+      });
+
+      ctx.restore();
+    }
+
+  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize, jigMode, xRuler, yRuler, baseLine, detectedDrills, selectedDrillId]);
 
 
   return (
@@ -1266,7 +1498,7 @@ const PhotoScaleApp = () => {
               </label>
             </div>
           ) : (
-            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : 'crosshair' }}>
+            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : jigMode && jigAddingDrill ? 'crosshair' : jigMode ? 'ns-resize' : 'crosshair' }}>
                <canvas
                 ref={canvasRef}
                 width={correctedImage ? correctedImage.naturalWidth : image.naturalWidth}
@@ -1303,7 +1535,7 @@ const PhotoScaleApp = () => {
               {(isProcessing || isDetectingPaper) && (
                   <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex flex-col items-center justify-center text-blue-800 z-50">
                       <Loader2 size={48} className="animate-spin mb-2" />
-                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : 'Detecting Drill Shape...'}</span>
+                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : jigMode ? jigProcessingMsg : 'Detecting Drill Shape...'}</span>
                   </div>
               )}
             </div>
@@ -1352,56 +1584,43 @@ const PhotoScaleApp = () => {
                             Perspective: X/Y scales differ by {(Math.abs(xRuler.scalePxPerMm - yRuler.scalePxPerMm) / Math.max(xRuler.scalePxPerMm, yRuler.scalePxPerMm) * 100).toFixed(1)}%
                         </div>
                     )}
-                    <button
-                        disabled={!image || !cvReady}
-                        className="w-full h-[34px] px-3 bg-orange-600 text-white rounded-md text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
-                    >
-                        <Crosshair size={14} />
-                        {xRuler ? 'Re-detect Rulers' : 'Detect Rulers'}
-                    </button>
-                </div>
-                {!cvReady && <p className="text-[10px] text-gray-400 mt-1">Initializing Computer Vision Engine...</p>}
-            </div>
+                    {/* API Key */}
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-orange-400 mb-0.5 block">Gemini API Key</label>
+                        <div className="flex gap-1">
+                            <input
+                                type="password"
+                                value={geminiApiKey}
+                                onChange={(e) => saveGeminiApiKey(e.target.value)}
+                                placeholder="Enter API key..."
+                                className="flex-1 text-xs px-2 py-1 border border-gray-200 rounded bg-white font-mono"
+                            />
+                        </div>
+                        {!geminiApiKey && (
+                            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-500 hover:underline mt-0.5 block">
+                                Get a free Gemini API key
+                            </a>
+                        )}
+                    </div>
 
-            {/* Detection Section */}
-            <div className="p-4 bg-orange-50/50 border-b border-orange-100">
-                <h2 className="text-sm font-bold text-orange-900 mb-3 flex items-center gap-2">
-                    <Crosshair size={16} /> Detection
-                </h2>
-                <div className="space-y-2">
-                    <div>
-                        <label className="text-[10px] uppercase font-bold text-orange-400 mb-0.5 block">Min. Contour Area</label>
-                        <input
-                            type="range"
-                            min="200"
-                            max="5000"
-                            step="100"
-                            value={jigDetectionParams.minContourArea}
-                            onChange={(e) => setJigDetectionParams(p => ({ ...p, minContourArea: Number(e.target.value) }))}
-                            className="w-full accent-orange-600"
-                        />
-                        <span className="text-[10px] text-gray-500 font-mono">{jigDetectionParams.minContourArea}px</span>
-                    </div>
-                    <div>
-                        <label className="text-[10px] uppercase font-bold text-orange-400 mb-0.5 block">Min. Aspect Ratio</label>
-                        <input
-                            type="range"
-                            min="1.5"
-                            max="8"
-                            step="0.5"
-                            value={jigDetectionParams.minAspectRatio}
-                            onChange={(e) => setJigDetectionParams(p => ({ ...p, minAspectRatio: Number(e.target.value) }))}
-                            className="w-full accent-orange-600"
-                        />
-                        <span className="text-[10px] text-gray-500 font-mono">{jigDetectionParams.minAspectRatio}:1</span>
-                    </div>
+                    {/* Single analyze button */}
                     <button
-                        disabled={!xRuler || !yRuler || !baseLine}
+                        onClick={analyzeWithGemini}
+                        disabled={!image || !geminiApiKey || isProcessing}
                         className="w-full h-[34px] px-3 bg-orange-600 text-white rounded-md text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                     >
-                        <Crosshair size={14} />
-                        Detect Drills
+                        {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
+                        {detectedDrills.length > 0 ? 'Re-analyze Jig' : 'Analyze Jig'}
                     </button>
+                    {isProcessing && jigProcessingMsg && (
+                        <p className="text-[10px] text-orange-600">{jigProcessingMsg}</p>
+                    )}
+                    {geminiError && (
+                        <p className="text-[10px] text-red-600">{geminiError}</p>
+                    )}
+                    {baseLine && (
+                        <p className="text-[10px] text-gray-500">Drag the white dashed line on the canvas to adjust base line</p>
+                    )}
                 </div>
             </div>
 
@@ -1499,6 +1718,20 @@ const PhotoScaleApp = () => {
                         </div>
                     </div>
                 </div>
+
+                {/* Manual drill addition */}
+                {yRuler && baseLine && (
+                    <button
+                        onClick={() => setJigAddingDrill(!jigAddingDrill)}
+                        className={`w-full h-[30px] px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1 transition ${
+                            jigAddingDrill
+                                ? 'bg-green-600 text-white'
+                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}
+                    >
+                        {jigAddingDrill ? 'Drawing... click to cancel' : '+ Add Drill Manually'}
+                    </button>
+                )}
 
                 {/* Export */}
                 {detectedDrills.length > 0 && (
@@ -1994,6 +2227,7 @@ const PhotoScaleApp = () => {
             </div>
         </div>
       )}
+
     </div>
   );
 };
