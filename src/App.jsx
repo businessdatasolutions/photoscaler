@@ -1555,7 +1555,7 @@ const PhotoScaleApp = () => {
                 </h2>
                 <div className="space-y-2">
                     <div className="flex items-center justify-between text-xs">
-                        <span className="text-gray-600">X-Ruler:</span>
+                        <span className="text-gray-600">A4 Ref:</span>
                         {xRuler ? (
                             <span className="font-mono text-orange-700">{xRuler.scalePxPerMm.toFixed(2)} px/mm</span>
                         ) : (
@@ -1581,7 +1581,7 @@ const PhotoScaleApp = () => {
                     {xRuler && yRuler && Math.abs(xRuler.scalePxPerMm - yRuler.scalePxPerMm) / Math.max(xRuler.scalePxPerMm, yRuler.scalePxPerMm) > 0.05 && (
                         <div className="bg-amber-100 rounded p-2 text-[10px] text-amber-700 flex items-center gap-1">
                             <AlertTriangle size={12} />
-                            Perspective: X/Y scales differ by {(Math.abs(xRuler.scalePxPerMm - yRuler.scalePxPerMm) / Math.max(xRuler.scalePxPerMm, yRuler.scalePxPerMm) * 100).toFixed(1)}%
+                            A4/Ruler scale ratio: {(Math.abs(xRuler.scalePxPerMm - yRuler.scalePxPerMm) / Math.max(xRuler.scalePxPerMm, yRuler.scalePxPerMm) * 100).toFixed(1)}% (perspective correction applied)
                         </div>
                     )}
                     {/* API Key */}

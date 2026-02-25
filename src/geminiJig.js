@@ -6,46 +6,62 @@ const GEMINI_API_URL =
 function buildPrompt(imageWidth, imageHeight, thresholds) {
   return `You are analyzing a photograph of a drill bit measurement jig. The jig contains:
 
-1. TWO RULERS: One horizontal ruler along the X-axis and one vertical ruler along the Y-axis. Each ruler measures 0–40 centimeters with tick marks every centimeter.
+1. ONE VERTICAL MEASURING TAPE: A single measuring tape mounted on the back board of the jig, running vertically (Y-axis). It measures 0–40 centimeters with tick marks every centimeter. This is on the far side of the jig (back wall).
 
-2. A BASE LINE: The top edge of the drill holder tray — a horizontal line where all drill bits are inserted at the bottom.
+2. AN A4 SHEET OF PAPER: A colored A4 sheet (297mm × 210mm) lying flat on the table beside or in front of the jig. Its near edge (closest to the camera) appears wider in pixels than its far edge due to perspective. Use both edges to compute perspective distortion.
 
-3. DRILL BITS: Multiple drill bits standing vertically in the jig, rising above the base line.
+3. A BASE LINE: The top edge of the drill holder tray — a horizontal line where all drill bits are inserted at the bottom.
+
+4. DRILL BITS: Multiple drill bits standing vertically in the jig, rising above the base line. Drills closer to the camera appear proportionally taller in pixels than drills near the back wall.
 
 The image is ${imageWidth}×${imageHeight} pixels.
 
-TASK:
-1. Locate both rulers and their tick marks.
-2. Locate the base line (top edge of drill holder tray).
-3. Identify every drill bit visible in the image.
-4. For each drill, measure its height in millimeters from the base line to the tip using the rulers for scale.
-5. Categorize: A (Short, <${thresholds.shortMax}mm), B (Medium, ${thresholds.shortMax}–${thresholds.mediumMax}mm), C (Long, >${thresholds.mediumMax}mm).
+TASK — follow these steps IN ORDER:
 
-Return ONLY valid JSON (no markdown fences) matching this schema:
+STEP 1 — RULER TICK CALIBRATION:
+Find the vertical measuring tape. Record at least 4 observed cm marks with their pixel Y coordinates. Use the spread of ticks to compute an accurate px/mm scale.
+
+STEP 2 — A4 PERSPECTIVE RATIO:
+Find the A4 sheet. Measure the pixel length of its near edge (closest to camera) and far edge (furthest from camera). Compute:
+  perspectiveRatio = nearEdgePx / farEdgePx   (will be > 1.0 because near side looks larger)
+  scalePxPerMm = nearEdgePx / 210   (210mm = short side of A4, use whichever edge is clearer)
+
+STEP 3 — BASE LINE:
+Find the base line pixel Y coordinate.
+
+STEP 4 — PER-DRILL MEASUREMENT WITH PERSPECTIVE CORRECTION:
+For each drill:
+  a) Measure raw height in pixels from base line to drill tip.
+  b) Estimate depthRatio: how far the drill is from the front of the jig toward the back wall.
+     depthRatio = 0.0 means drill is at the same depth as the ruler (back wall, far side).
+     depthRatio = 1.0 means drill is at the very front, closest to the camera.
+  c) Compute perspective-corrected height:
+     corrected_height_mm = (raw_height_px / ruler_scalePxPerMm) / (1 + depthRatio × (perspectiveRatio - 1))
+  d) Categorize: A (Short, <${thresholds.shortMax}mm), B (Medium, ${thresholds.shortMax}–${thresholds.mediumMax}mm), C (Long, >${thresholds.mediumMax}mm).
+
+Return ONLY valid JSON (no markdown fences) matching this schema exactly:
 {
-  "xRuler": {
-    "startX": <pixel X of 0cm mark>,
-    "startY": <pixel Y of ruler>,
-    "endX": <pixel X of last visible cm mark>,
-    "endY": <pixel Y of ruler>,
-    "lengthCm": <visible ruler length in cm>
+  "ruler": {
+    "ticks": [
+      { "cm": <integer cm value>, "pixelY": <pixel Y coordinate> },
+      ...at least 4 entries...
+    ]
   },
-  "yRuler": {
-    "startX": <pixel X of ruler>,
-    "startY": <pixel Y of 0cm mark>,
-    "endX": <pixel X of ruler>,
-    "endY": <pixel Y of last visible cm mark>,
-    "lengthCm": <visible ruler length in cm>
+  "a4Paper": {
+    "nearEdgePx": <pixel length of A4 near edge>,
+    "farEdgePx": <pixel length of A4 far edge>,
+    "perspectiveRatio": <nearEdgePx / farEdgePx>,
+    "scalePxPerMm": <px per mm from A4 near edge / 210>
   },
   "baseLineY": <pixel Y of base line>,
   "drills": [
     {
       "centerX": <pixel X of drill center>,
       "topY": <pixel Y of drill tip>,
-      "bottomY": <pixel Y of drill base>,
       "widthPx": <approximate drill width in pixels>,
-      "heightMm": <measured height in millimeters>,
-      "category": "A" | "B" | "C"
+      "depthRatio": <0.0 = at ruler depth, 1.0 = front of jig>,
+      "heightMm": <perspective-corrected height in millimeters>,
+      "category": "A or B or C"
     }
   ]
 }
@@ -53,20 +69,107 @@ Return ONLY valid JSON (no markdown fences) matching this schema:
 IMPORTANT:
 - All coordinates are in pixels of the original ${imageWidth}×${imageHeight} image.
 - Be thorough: detect ALL visible drill bits.
-- Measure heights as precisely as possible using the ruler markings.`;
+- The ruler.ticks array must have at least 4 entries spread across the visible ruler range.
+- perspectiveRatio should be between 1.0 and 2.0 for a typical ~30-45° camera angle.
+- heightMm values must be perspective-corrected as described in Step 4c.`;
+}
+
+/**
+ * Build a yRuler object from the new ruler.ticks[] data.
+ * @param {{ ticks: Array<{cm: number, pixelY: number}> }} rulerData
+ * @returns {{ line, ticks, scalePxPerMm, length, refPixelY }}
+ */
+function buildRulerFromTicks(rulerData) {
+  const ticks = (rulerData.ticks || []).slice().sort((a, b) => a.cm - b.cm);
+  if (ticks.length < 2) return null;
+
+  // Use linear regression over all ticks for a robust px/mm estimate
+  const n = ticks.length;
+  let sumMm = 0, sumPx = 0, sumMmPx = 0, sumMm2 = 0;
+  for (const t of ticks) {
+    const mm = t.cm * 10;
+    sumMm += mm;
+    sumPx += t.pixelY;
+    sumMmPx += mm * t.pixelY;
+    sumMm2 += mm * mm;
+  }
+  // slope = dpx/dmm (could be negative if ruler goes top=0 to bottom=40)
+  const slope = (n * sumMmPx - sumMm * sumPx) / (n * sumMm2 - sumMm * sumMm);
+  const scalePxPerMm = Math.abs(slope);
+
+  // Reference pixel Y at 0cm
+  const intercept = (sumPx - slope * sumMm) / n;
+  const refPixelY = intercept; // pixel Y when cm=0
+
+  const firstTick = ticks[0];
+  const lastTick = ticks[ticks.length - 1];
+  const start = { x: 0, y: firstTick.pixelY };
+  const end = { x: 0, y: lastTick.pixelY };
+
+  // Build tick array relative to start (distance in px from start)
+  const ticksOut = ticks.map(t => ({
+    px: Math.abs(t.pixelY - refPixelY),
+    mm: t.cm * 10,
+  }));
+
+  const lengthMm = lastTick.cm * 10 - firstTick.cm * 10;
+
+  return {
+    line: { start, end },
+    ticks: ticksOut,
+    scalePxPerMm,
+    length: lengthMm,
+    refPixelY,
+  };
+}
+
+/**
+ * Build an xRuler-compatible object from the A4 paper scalar data.
+ * Used only for the perspective warning UI (scalePxPerMm comparison).
+ * @param {{ nearEdgePx, farEdgePx, perspectiveRatio, scalePxPerMm }} a4Data
+ * @returns {{ line, ticks, scalePxPerMm, length }}
+ */
+function buildRulerFromA4(a4Data) {
+  if (!a4Data || !a4Data.scalePxPerMm) return null;
+  return {
+    line: { start: { x: 0, y: 0 }, end: { x: a4Data.nearEdgePx || 0, y: 0 } },
+    ticks: [],
+    scalePxPerMm: a4Data.scalePxPerMm,
+    length: 210,
+  };
 }
 
 function parseGeminiResponse(text, imageWidth, imageHeight, thresholds) {
-  // Extract JSON from response (handle markdown fences if present)
+  // Extract JSON from response (handle markdown fences, thinking blocks, etc.)
   let jsonStr = text.trim();
-  const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) jsonStr = fenceMatch[1].trim();
 
+  // Try to extract from markdown code fences (```json ... ``` or ``` ... ```)
+  const fenceMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*)\n?```/);
+  if (fenceMatch) {
+    jsonStr = fenceMatch[1].trim();
+  } else {
+    // Try to find raw JSON object in the text
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) jsonStr = jsonMatch[0];
+  }
+
+  console.log('Gemini raw response:', text);
+  console.log('Extracted JSON string:', jsonStr);
   const data = JSON.parse(jsonStr);
 
-  // Transform xRuler
-  const xRuler = data.xRuler ? transformRuler(data.xRuler, 'x') : null;
-  const yRuler = data.yRuler ? transformRuler(data.yRuler, 'y') : null;
+  // Build rulers — support both new schema (ruler.ticks) and old schema (xRuler/yRuler) for backward compat
+  let xRuler = null;
+  let yRuler = null;
+
+  if (data.ruler && data.ruler.ticks) {
+    // New schema
+    yRuler = buildRulerFromTicks(data.ruler);
+    xRuler = buildRulerFromA4(data.a4Paper);
+  } else {
+    // Old schema fallback
+    xRuler = data.xRuler ? transformRuler(data.xRuler, 'x') : null;
+    yRuler = data.yRuler ? transformRuler(data.yRuler, 'y') : null;
+  }
 
   // Transform baseLine
   const baseLine = data.baseLineY != null
@@ -86,19 +189,21 @@ function parseGeminiResponse(text, imageWidth, imageHeight, thresholds) {
       const heightMm = d.heightMm || 0;
       const category = heightMm < thresholds.shortMax ? 'A'
         : heightMm < thresholds.mediumMax ? 'B' : 'C';
+      // bottomY: use data.baseLineY as fallback (new schema drops bottomY)
+      const bottomY = d.bottomY != null ? d.bottomY : (data.baseLineY || 0);
       return {
         id: i + 1,
         rect: null,
         vertices: [
           { x: d.centerX - halfW, y: d.topY },
           { x: d.centerX + halfW, y: d.topY },
-          { x: d.centerX + halfW, y: d.bottomY },
-          { x: d.centerX - halfW, y: d.bottomY },
+          { x: d.centerX + halfW, y: bottomY },
+          { x: d.centerX - halfW, y: bottomY },
         ],
         topY: d.topY,
-        bottomY: d.bottomY,
+        bottomY,
         centerX: d.centerX,
-        heightPx: d.bottomY - d.topY,
+        heightPx: bottomY - d.topY,
         heightMm,
         category,
       };
@@ -183,7 +288,8 @@ export async function analyzeJigImage(apiKey, image, thresholds) {
       }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 32000,
+        thinkingConfig: { thinkingBudget: 4096 },
       },
     }),
   });
@@ -204,7 +310,10 @@ export async function analyzeJigImage(apiKey, image, thresholds) {
   }
 
   const json = await response.json();
-  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+  // Gemini 2.5 may return multiple parts (thinking + text). Find the text part with JSON.
+  const parts = json.candidates?.[0]?.content?.parts || [];
+  const text = parts.map(p => p.text || '').filter(Boolean).pop();
+  console.log('Gemini response parts:', parts.length, parts.map(p => (p.text || '').substring(0, 100)));
   if (!text) {
     throw new Error('Gemini returned an empty response. Try again with a clearer photo.');
   }
@@ -232,6 +341,7 @@ function scaleResult(result, factor) {
     scalePoint(r.line.end);
     r.ticks.forEach(t => { t.px *= factor; });
     r.scalePxPerMm *= factor;
+    if (r.refPixelY != null) r.refPixelY *= factor;
   };
   scaleRuler(result.xRuler);
   scaleRuler(result.yRuler);
