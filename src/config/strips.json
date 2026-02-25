@@ -5,6 +5,7 @@
       "diameter_mm": 3,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -12,6 +13,7 @@
       "diameter_mm": 4,
       "color_name": "bruin",
       "color_hex": "#8B4513",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -19,6 +21,7 @@
       "diameter_mm": 5,
       "color_name": "groen",
       "color_hex": "#22c55e",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -26,6 +29,7 @@
       "diameter_mm": 6,
       "color_name": "grijs",
       "color_hex": "#9ca3af",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -33,6 +37,7 @@
       "diameter_mm": 7,
       "color_name": "rood",
       "color_hex": "#ef4444",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -40,6 +45,7 @@
       "diameter_mm": 8,
       "color_name": "geel",
       "color_hex": "#fbbf24",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -47,6 +53,7 @@
       "diameter_mm": 9,
       "color_name": "wit",
       "color_hex": "#f1f5f9",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -54,6 +61,7 @@
       "diameter_mm": 10,
       "color_name": "oranje",
       "color_hex": "#f97316",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -61,6 +69,7 @@
       "diameter_mm": 11,
       "color_name": "blauw",
       "color_hex": "#3b82f6",
+      "slot_count": 13,
       "features": []
     },
     {
@@ -68,6 +77,7 @@
       "diameter_mm": 12,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 13,
       "features": [
         "zonder_pinnen"
       ]
@@ -77,6 +87,7 @@
       "diameter_mm": 12,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 7,
       "features": [
         "met_pinnen"
       ]
@@ -86,6 +97,7 @@
       "diameter_mm": 13,
       "color_name": "wit",
       "color_hex": "#f1f5f9",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -93,6 +105,7 @@
       "diameter_mm": 14,
       "color_name": "geel",
       "color_hex": "#fbbf24",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -100,6 +113,7 @@
       "diameter_mm": 15,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -107,6 +121,7 @@
       "diameter_mm": 16,
       "color_name": "blauw",
       "color_hex": "#3b82f6",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -114,6 +129,7 @@
       "diameter_mm": 18,
       "color_name": "rood",
       "color_hex": "#ef4444",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -121,6 +137,7 @@
       "diameter_mm": 20,
       "color_name": "oranje",
       "color_hex": "#f97316",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -128,6 +145,7 @@
       "diameter_mm": 21,
       "color_name": "bruin",
       "color_hex": "#8B4513",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -135,6 +153,7 @@
       "diameter_mm": 22,
       "color_name": "wit",
       "color_hex": "#f1f5f9",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -142,6 +161,7 @@
       "diameter_mm": 24,
       "color_name": "paars",
       "color_hex": "#a855f7",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -149,6 +169,7 @@
       "diameter_mm": 25,
       "color_name": "grijs",
       "color_hex": "#9ca3af",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -156,6 +177,7 @@
       "diameter_mm": 26,
       "color_name": "groen",
       "color_hex": "#22c55e",
+      "slot_count": 7,
       "features": []
     },
     {
@@ -163,6 +185,7 @@
       "diameter_mm": 32,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 5,
       "features": []
     },
     {
@@ -170,6 +193,7 @@
       "diameter_mm": 36,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 5,
       "features": []
     },
     {
@@ -177,6 +201,7 @@
       "diameter_mm": 40,
       "color_name": "zwart",
       "color_hex": "#1a1a1a",
+      "slot_count": 5,
       "features": []
     }
   ],
