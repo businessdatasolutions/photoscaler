@@ -1,0 +1,82 @@
+{
+  "coatings": [
+    {
+      "id": "TiAlN",
+      "name": "TiAlN",
+      "full_name": "Titanium Aluminium Nitride",
+      "werkbon_color_name": "donkergroen",
+      "werkbon_color_hex": "#166534"
+    },
+    {
+      "id": "EXTRAL",
+      "name": "Extral",
+      "full_name": "Extral",
+      "werkbon_color_name": "lichtgroen",
+      "werkbon_color_hex": "#86efac"
+    },
+    {
+      "id": "TiN",
+      "name": "TiN",
+      "full_name": "Titanium Nitride",
+      "werkbon_color_name": "geel",
+      "werkbon_color_hex": "#fbbf24"
+    },
+    {
+      "id": "TiAlCN",
+      "name": "TiAlCN",
+      "full_name": "Titanium Aluminium Carbonitride",
+      "werkbon_color_name": "oranje",
+      "werkbon_color_hex": "#f97316",
+      "notes": "eventueel met plasma"
+    },
+    {
+      "id": "WCC",
+      "name": "WCC",
+      "full_name": "Tungsten Carbide Carbon (DLC)",
+      "werkbon_color_name": "roze",
+      "werkbon_color_hex": "#f472b6"
+    },
+    {
+      "id": "CrCN",
+      "name": "CrCN",
+      "full_name": "Chromium Carbonitride",
+      "werkbon_color_name": "wit/zilver",
+      "werkbon_color_hex": "#e2e8f0"
+    },
+    {
+      "id": "DLC",
+      "name": "DLC",
+      "full_name": "Diamond-Like Carbon",
+      "werkbon_color_name": "lichtoranje",
+      "werkbon_color_hex": "#fdba74"
+    },
+    {
+      "id": "TiCN",
+      "name": "TiCN",
+      "full_name": "Titanium Carbonitride",
+      "werkbon_color_name": "lichtblauw",
+      "werkbon_color_hex": "#93c5fd"
+    },
+    {
+      "id": "GOLD",
+      "name": "Gold",
+      "full_name": "Gold coating",
+      "werkbon_color_name": "lichtgeel",
+      "werkbon_color_hex": "#fef08a"
+    },
+    {
+      "id": "ZnCN",
+      "name": "ZnCN",
+      "full_name": "Zinc Carbonitride",
+      "werkbon_color_name": "lichtoranje",
+      "werkbon_color_hex": "#fed7aa"
+    },
+    {
+      "id": "ONTC",
+      "name": "Ontcoaten",
+      "full_name": "Ontcoaten (stripping)",
+      "werkbon_color_name": "donkerblauw",
+      "werkbon_color_hex": "#1e3a8a"
+    }
+  ]
+}
