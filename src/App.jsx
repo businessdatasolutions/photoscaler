@@ -72,6 +72,8 @@ const PhotoScaleApp = () => {
 
   // Manual ruler drawing: null | 'x' | 'y'
   const [jigDrawingRuler, setJigDrawingRuler] = useState(null);
+  // Base line dragging
+  const [draggingBaseLine, setDraggingBaseLine] = useState(false);
 
   // Detection Tuning
   const [jigDetectionParams, setJigDetectionParams] = useState({
@@ -896,6 +898,74 @@ const PhotoScaleApp = () => {
     }
   };
 
+  // --- Jig Mode CV: Base Line Detection ---
+  const detectBaseLine = () => {
+    if (!window.cv || !cvReady || !image) return;
+    setIsProcessing(true);
+
+    setTimeout(() => {
+      const mats = [];
+      try {
+        const cv = window.cv;
+        const src = cv.imread(canvasRef.current); mats.push(src);
+        const gray = new cv.Mat(); mats.push(gray);
+        const edges = new cv.Mat(); mats.push(edges);
+        const lines = new cv.Mat(); mats.push(lines);
+
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+        cv.Canny(gray, edges, 50, 150);
+
+        // Focus on the lower 60% of the image (where the base typically is)
+        const roiY = Math.floor(src.rows * 0.4);
+        const roiHeight = src.rows - roiY;
+        const roi = edges.roi(new cv.Rect(0, roiY, src.cols, roiHeight));
+        mats.push(roi);
+
+        cv.HoughLinesP(roi, lines, 1, Math.PI / 180, 60, src.cols * 0.2, 20);
+
+        // Find the topmost strong horizontal line in the ROI
+        let bestY = Infinity;
+
+        for (let i = 0; i < lines.rows; i++) {
+          const x1 = lines.data32S[i * 4];
+          const y1 = lines.data32S[i * 4 + 1];
+          const x2 = lines.data32S[i * 4 + 2];
+          const y2 = lines.data32S[i * 4 + 3];
+          const angle = Math.abs(Math.atan2(y2 - y1, x2 - x1)) * (180 / Math.PI);
+          const length = Math.hypot(x2 - x1, y2 - y1);
+
+          if (angle < 15 && length > src.cols * 0.15) {
+            const avgY = (y1 + y2) / 2 + roiY;
+            if (avgY < bestY) {
+              bestY = avgY;
+            }
+          }
+        }
+
+        if (bestY < Infinity) {
+          const baseY = Math.round(bestY);
+          let mmValue = 0;
+          if (yRuler && yRuler.ticks.length >= 2) {
+            mmValue = (baseY - yRuler.ticks[0].px) / yRuler.scalePxPerMm;
+          }
+          setBaseLine({ y: baseY, mmValue });
+        } else {
+          const fallbackY = Math.round(src.rows * 0.75);
+          setBaseLine({ y: fallbackY, mmValue: 0 });
+          alert('Could not auto-detect base line. Drag the white dashed line to the correct position.');
+        }
+
+      } catch (e) {
+        console.error('Base line detection error:', e);
+        alert('Error detecting base line: ' + e.message);
+      } finally {
+        mats.forEach(m => m.delete());
+      }
+      setIsProcessing(false);
+    }, 100);
+  };
+
   // --- Jig Mode Helpers ---
   const smoothProfile = (values, windowSize) => {
     const result = [];
@@ -1066,6 +1136,12 @@ const PhotoScaleApp = () => {
     // Don't allow drawing while corners are shown
     if (paperCorners) return;
 
+    // Jig mode: check if clicking near the base line for dragging
+    if (jigMode && baseLine && Math.abs(coords.y - baseLine.y) < 15) {
+      setDraggingBaseLine(true);
+      return;
+    }
+
     // In jig mode, only allow drawing when in manual ruler mode
     if (jigMode && !jigDrawingRuler) return;
 
@@ -1080,6 +1156,17 @@ const PhotoScaleApp = () => {
       return;
     }
 
+    // Handle base line dragging
+    if (draggingBaseLine) {
+      const coords = getCanvasCoordinates(e);
+      let mmValue = 0;
+      if (yRuler && yRuler.ticks.length >= 2) {
+        mmValue = (coords.y - yRuler.ticks[0].px) / yRuler.scalePxPerMm;
+      }
+      setBaseLine({ y: coords.y, mmValue });
+      return;
+    }
+
     if (!isDrawing || !currentLine) return;
     const coords = getCanvasCoordinates(e);
     setCurrentLine({ ...currentLine, end: coords });
@@ -1089,6 +1176,21 @@ const PhotoScaleApp = () => {
     // End corner dragging
     if (draggingCorner !== null) {
       setDraggingCorner(null);
+      return;
+    }
+
+    // End base line dragging — recalculate all drill heights
+    if (draggingBaseLine) {
+      setDraggingBaseLine(false);
+      if (detectedDrills.length > 0 && yRuler) {
+        setDetectedDrills(prev => prev.map(drill => {
+          const heightPx = baseLine.y - drill.topY;
+          const heightMm = heightPx / yRuler.scalePxPerMm;
+          const category = heightMm < categoryThresholds.shortMax ? 'A'
+            : heightMm < categoryThresholds.mediumMax ? 'B' : 'C';
+          return { ...drill, heightPx, heightMm, category };
+        }));
+      }
       return;
     }
 
@@ -1191,6 +1293,7 @@ const PhotoScaleApp = () => {
     setDetectedDrills([]);
     setSelectedDrillId(null);
     setJigDrawingRuler(null);
+    setDraggingBaseLine(false);
     setCategoryThresholds({ shortMax: 200, mediumMax: 300 });
     setJigDetectionParams({
       minContourArea: 1000,
@@ -1674,7 +1777,7 @@ const PhotoScaleApp = () => {
               </label>
             </div>
           ) : (
-            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : 'crosshair' }}>
+            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : jigMode && jigDrawingRuler ? 'crosshair' : jigMode ? 'ns-resize' : 'crosshair' }}>
                <canvas
                 ref={canvasRef}
                 width={correctedImage ? correctedImage.naturalWidth : image.naturalWidth}
@@ -1796,6 +1899,16 @@ const PhotoScaleApp = () => {
                     </div>
                     {jigDrawingRuler && (
                         <p className="text-[10px] text-cyan-600">Draw a line along the {jigDrawingRuler.toUpperCase()}-axis ruler (0 to 40cm)</p>
+                    )}
+                    <button
+                        onClick={detectBaseLine}
+                        disabled={!image || !cvReady || isProcessing}
+                        className="w-full h-[30px] px-3 bg-gray-600 text-white rounded-md text-[10px] font-semibold hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                        {baseLine ? 'Re-detect Base Line' : 'Detect Base Line'}
+                    </button>
+                    {baseLine && (
+                        <p className="text-[10px] text-gray-500">Drag the white dashed line on the canvas to adjust</p>
                     )}
                 </div>
                 {!cvReady && <p className="text-[10px] text-gray-400 mt-1">Initializing Computer Vision Engine...</p>}

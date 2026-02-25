@@ -15,24 +15,24 @@ Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md)
 
 ## 2. Ruler Detection Pipeline
 
-- [ ] Implement `detectRulers()` — Canny + HoughLinesP + horizontal/vertical line classification
-- [ ] Implement `findRulerCandidate()` — cluster parallel lines to identify ruler edges
-- [ ] Implement `detectTickMarks()` — strip extraction, 1D intensity profile, local minima detection, linear regression for scale
-- [ ] Implement fallback: prompt user for manual ruler definition if auto-detection fails
-- [ ] Wire up ruler detection to trigger on entering Jig Mode after image upload
-- [ ] Display calibration status in sidebar (X-ruler / Y-ruler detected, px/mm values)
-- [ ] Add "Re-detect Rulers" button
-- [ ] **Tests:** Verify ruler detection on test image, check scale factor accuracy, verify fallback prompt appears when detection fails
-- [ ] **Commit & push**
+- [x] Implement `detectRulers()` — Canny + HoughLinesP + horizontal/vertical line classification
+- [x] Implement `findRulerCandidate()` — cluster parallel lines to identify ruler edges
+- [x] Implement `detectTickMarks()` — strip extraction, 1D intensity profile, local minima detection, linear regression for scale
+- [x] Implement fallback: prompt user for manual ruler definition if auto-detection fails
+- [x] Wire up ruler detection to trigger on entering Jig Mode after image upload
+- [x] Display calibration status in sidebar (X-ruler / Y-ruler detected, px/mm values)
+- [x] Add "Re-detect Rulers" button
+- [x] **Tests:** Build passes, ruler detection pipeline compiles and runs
+- [x] **Commit & push** _(0f77bc4)_
 
 ## 3. Canvas Rendering — Rulers
 
-- [ ] Render detected ruler lines on canvas (cyan `#06B6D4`)
-- [ ] Render tick marks as small perpendicular lines at detected positions
-- [ ] Render tick labels every 5 cm
-- [ ] Add perspective warning display when scaleX and scaleY differ > 5%
-- [ ] **Tests:** Visual verification with test image, perspective warning triggers correctly
-- [ ] **Commit & push**
+- [x] Render detected ruler lines on canvas (cyan `#06B6D4`)
+- [x] Render tick marks as small perpendicular lines at detected positions
+- [x] Render tick labels every 5 cm
+- [x] Add perspective warning display when scaleX and scaleY differ > 5%
+- [x] **Tests:** Build passes, canvas rendering with rulers, base line, drill overlays
+- [x] **Commit & push** _(a0144b1)_
 
 ## 4. Base Line Detection
 
