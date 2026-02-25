@@ -87,10 +87,23 @@ Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md)
 
 ## 9. Refinement & Polish
 
+- [x] Context-specific loading messages per CV operation
+- [x] Error handling with user-friendly alerts for each failure mode
+- [x] Loading spinners during CV processing
+- [x] Default detection parameters tunable via sidebar sliders
 - [ ] Test with multiple jig photographs under varying lighting conditions
-- [ ] Tune default detection parameters (block size, C, min area, aspect ratio)
-- [ ] Add error handling and user-friendly messages for each detection failure mode
 - [ ] Performance test with 20+ drills in a single image
-- [ ] Add loading spinners during CV processing
-- [ ] **Tests:** End-to-end test of full Flow F (upload → detect → categorize → export)
+- [ ] End-to-end test of full Flow F (upload → detect → categorize → export)
+- [x] **Commit & push** _(6877f55)_
+
+## 10. Ruler Detection v2 (Edge-Density + Autocorrelation)
+
+- [x] Extract ruler detection into `src/rulerDetection.js` module
+- [x] Implement autocorrelation-based periodicity detection for tick marks
+- [x] Implement edge-density profiling to score line candidates
+- [x] Rewrite `detectRulers()` to use scoring instead of longest-line heuristic
+- [x] Relax HoughLinesP parameters (threshold 50, minLength 10%, angle 25°/65°)
+- [x] Adaptive tick detection (prominence = 0.5×stddev, period from autocorrelation)
+- [x] Add ruler length input modal for manual calibration (with 30/40/50cm presets)
+- [x] Add debug visualization toggle (detection stats in sidebar)
 - [ ] **Commit & push**
