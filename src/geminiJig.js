@@ -1,7 +1,7 @@
 // Gemini API integration for Jig Mode drill analysis
 
 const GEMINI_API_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 function buildPrompt(imageWidth, imageHeight, thresholds) {
   return `You are analyzing a photograph of a drill bit measurement jig. The jig contains:
