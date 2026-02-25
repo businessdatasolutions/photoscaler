@@ -1,0 +1,195 @@
+{
+  "strips": [
+    {
+      "id": "S03",
+      "diameter_mm": 3,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": []
+    },
+    {
+      "id": "S04",
+      "diameter_mm": 4,
+      "color_name": "bruin",
+      "color_hex": "#8B4513",
+      "features": []
+    },
+    {
+      "id": "S05",
+      "diameter_mm": 5,
+      "color_name": "groen",
+      "color_hex": "#22c55e",
+      "features": []
+    },
+    {
+      "id": "S06",
+      "diameter_mm": 6,
+      "color_name": "grijs",
+      "color_hex": "#9ca3af",
+      "features": []
+    },
+    {
+      "id": "S07",
+      "diameter_mm": 7,
+      "color_name": "rood",
+      "color_hex": "#ef4444",
+      "features": []
+    },
+    {
+      "id": "S08",
+      "diameter_mm": 8,
+      "color_name": "geel",
+      "color_hex": "#fbbf24",
+      "features": []
+    },
+    {
+      "id": "S09",
+      "diameter_mm": 9,
+      "color_name": "wit",
+      "color_hex": "#f1f5f9",
+      "features": []
+    },
+    {
+      "id": "S10",
+      "diameter_mm": 10,
+      "color_name": "oranje",
+      "color_hex": "#f97316",
+      "features": []
+    },
+    {
+      "id": "S11",
+      "diameter_mm": 11,
+      "color_name": "blauw",
+      "color_hex": "#3b82f6",
+      "features": []
+    },
+    {
+      "id": "S12",
+      "diameter_mm": 12,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": [
+        "zonder_pinnen"
+      ]
+    },
+    {
+      "id": "S12-P",
+      "diameter_mm": 12,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": [
+        "met_pinnen"
+      ]
+    },
+    {
+      "id": "S13",
+      "diameter_mm": 13,
+      "color_name": "wit",
+      "color_hex": "#f1f5f9",
+      "features": []
+    },
+    {
+      "id": "S14",
+      "diameter_mm": 14,
+      "color_name": "geel",
+      "color_hex": "#fbbf24",
+      "features": []
+    },
+    {
+      "id": "S15",
+      "diameter_mm": 15,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": []
+    },
+    {
+      "id": "S16",
+      "diameter_mm": 16,
+      "color_name": "blauw",
+      "color_hex": "#3b82f6",
+      "features": []
+    },
+    {
+      "id": "S18",
+      "diameter_mm": 18,
+      "color_name": "rood",
+      "color_hex": "#ef4444",
+      "features": []
+    },
+    {
+      "id": "S20",
+      "diameter_mm": 20,
+      "color_name": "oranje",
+      "color_hex": "#f97316",
+      "features": []
+    },
+    {
+      "id": "S21",
+      "diameter_mm": 21,
+      "color_name": "bruin",
+      "color_hex": "#8B4513",
+      "features": []
+    },
+    {
+      "id": "S22",
+      "diameter_mm": 22,
+      "color_name": "wit",
+      "color_hex": "#f1f5f9",
+      "features": []
+    },
+    {
+      "id": "S24",
+      "diameter_mm": 24,
+      "color_name": "paars",
+      "color_hex": "#a855f7",
+      "features": []
+    },
+    {
+      "id": "S25",
+      "diameter_mm": 25,
+      "color_name": "grijs",
+      "color_hex": "#9ca3af",
+      "features": []
+    },
+    {
+      "id": "S26",
+      "diameter_mm": 26,
+      "color_name": "groen",
+      "color_hex": "#22c55e",
+      "features": []
+    },
+    {
+      "id": "S32",
+      "diameter_mm": 32,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": []
+    },
+    {
+      "id": "S36",
+      "diameter_mm": 36,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": []
+    },
+    {
+      "id": "S40",
+      "diameter_mm": 40,
+      "color_name": "zwart",
+      "color_hex": "#1a1a1a",
+      "features": []
+    }
+  ],
+  "color_palette": {
+    "zwart": "#1a1a1a",
+    "bruin": "#8B4513",
+    "groen": "#22c55e",
+    "grijs": "#9ca3af",
+    "rood": "#ef4444",
+    "geel": "#fbbf24",
+    "wit": "#f1f5f9",
+    "oranje": "#f97316",
+    "blauw": "#3b82f6",
+    "paars": "#a855f7"
+  }
+}
