@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Upload, Ruler, Trash2, RefreshCcw, Info, Check, AlertTriangle, Calculator, Cylinder, Crosshair, Loader2, Circle, FileImage, Move } from 'lucide-react';
 import { analyzeJigImage } from './geminiJig.js';
-import { analyzeJigSlots } from './geminiSlots.js';
+import { analyzeJigSlots, GEMINI_MODELS } from './geminiSlots.js';
 import stripsConfig from './config/strips.json';
 
 // Track OpenCV loading state outside component to survive StrictMode double-mount
@@ -90,6 +90,7 @@ const PhotoScaleApp = () => {
   const [slotDetectionResult, setSlotDetectionResult] = useState(null);
   const [slotDetectionError, setSlotDetectionError] = useState(null);
   const [isDetectingSlots, setIsDetectingSlots] = useState(false);
+  const [slotGeminiModel, setSlotGeminiModel] = useState('gemini-3-flash-preview');
 
   // Paper size definitions in mm
   const PAPER_SIZES = {
@@ -725,7 +726,7 @@ const PhotoScaleApp = () => {
     setSlotDetectionError(null);
 
     try {
-      const result = await analyzeJigSlots(geminiApiKey, image);
+      const result = await analyzeJigSlots(geminiApiKey, image, slotGeminiModel);
       setSlotDetectionResult(result);
     } catch (err) {
       console.error('Slot detection error:', err);
@@ -1692,6 +1693,18 @@ const PhotoScaleApp = () => {
                     )}
 
                     {/* Slot Detection */}
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-purple-400 mb-0.5 block">Model</label>
+                        <select
+                            value={slotGeminiModel}
+                            onChange={(e) => setSlotGeminiModel(e.target.value)}
+                            className="w-full text-xs px-2 py-1 border border-gray-200 rounded bg-white mb-1.5"
+                        >
+                            {GEMINI_MODELS.map(m => (
+                                <option key={m.id} value={m.id}>{m.label}</option>
+                            ))}
+                        </select>
+                    </div>
                     <button
                         onClick={analyzeSlots}
                         disabled={!image || !geminiApiKey || isDetectingSlots}
