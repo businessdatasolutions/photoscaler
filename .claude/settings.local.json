@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git config user.name \"rjhbraun\")",
-      "Bash(git config user.email \"rjhbraun@gmail.com\")"
-    ]
-  }
-}
