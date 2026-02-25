@@ -1497,7 +1497,138 @@ const PhotoScaleApp = () => {
       ctx.restore();
     }
 
-  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize]);
+    // --- Jig Mode Canvas Rendering ---
+    if (jigMode) {
+      ctx.save();
+
+      // Draw ruler lines
+      const drawRuler = (ruler, axis) => {
+        if (!ruler) return;
+        const { line, ticks } = ruler;
+
+        // Main ruler line
+        ctx.strokeStyle = '#06B6D4'; // cyan
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(line.start.x, line.start.y);
+        ctx.lineTo(line.end.x, line.end.y);
+        ctx.stroke();
+
+        // Tick marks
+        ticks.forEach((tick) => {
+          const tickLen = (tick.mm % 50 === 0) ? 16 : (tick.mm % 10 === 0) ? 10 : 6;
+          let tx, ty, tx2, ty2;
+
+          if (axis === 'x') {
+            tx = tick.px;
+            ty = line.start.y - tickLen;
+            tx2 = tick.px;
+            ty2 = line.start.y + tickLen;
+          } else {
+            tx = line.start.x - tickLen;
+            ty = tick.px;
+            tx2 = line.start.x + tickLen;
+            ty2 = tick.px;
+          }
+
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(tx2, ty2);
+          ctx.strokeStyle = '#06B6D4';
+          ctx.lineWidth = (tick.mm % 50 === 0) ? 2 : 1;
+          ctx.stroke();
+
+          // Labels every 5 cm (50 mm)
+          if (tick.mm % 50 === 0) {
+            const label = `${tick.mm / 10}`;
+            ctx.fillStyle = '#06B6D4';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            if (axis === 'x') {
+              ctx.fillText(label, tick.px, line.start.y - tickLen - 10);
+            } else {
+              ctx.fillText(label, line.start.x - tickLen - 14, tick.px);
+            }
+          }
+        });
+      };
+
+      drawRuler(xRuler, 'x');
+      drawRuler(yRuler, 'y');
+
+      // Draw base line
+      if (baseLine) {
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, baseLine.y);
+        ctx.lineTo(canvas.width, baseLine.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Label
+        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText('BASE LINE', 10, baseLine.y - 4);
+      }
+
+      // Draw detected drills
+      const CATEGORY_COLORS = { A: '#3B82F6', B: '#F59E0B', C: '#EF4444' };
+
+      detectedDrills.forEach((drill) => {
+        const isSelected = selectedDrillId === drill.id;
+        const color = isSelected ? '#22C55E' : CATEGORY_COLORS[drill.category];
+
+        // Draw bounding box
+        if (drill.vertices && drill.vertices.length === 4) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = isSelected ? 3 : 2;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(drill.vertices[0].x, drill.vertices[0].y);
+          for (let i = 1; i < 4; i++) {
+            ctx.lineTo(drill.vertices[i].x, drill.vertices[i].y);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+
+        // Draw label above drill
+        const label = `#${drill.id}: ${Math.round(drill.heightMm)}mm (${drill.category})`;
+        ctx.font = 'bold 12px sans-serif';
+        const metrics = ctx.measureText(label);
+        const labelX = drill.centerX - metrics.width / 2 - 4;
+        const labelY = drill.topY - 22;
+
+        ctx.fillStyle = color;
+        ctx.fillRect(labelX, labelY, metrics.width + 8, 18);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, drill.centerX, labelY + 9);
+      });
+
+      // Draw current line (manual ruler drawing)
+      if (currentLine && jigDrawingRuler) {
+        ctx.strokeStyle = '#06B6D4';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 4]);
+        ctx.beginPath();
+        ctx.moveTo(currentLine.start.x, currentLine.start.y);
+        ctx.lineTo(currentLine.end.x, currentLine.end.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      ctx.restore();
+    }
+
+  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize, jigMode, xRuler, yRuler, baseLine, detectedDrills, selectedDrillId, jigDrawingRuler]);
 
 
   return (
