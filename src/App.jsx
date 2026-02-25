@@ -70,6 +70,9 @@ const PhotoScaleApp = () => {
     mediumMax: 300,  // mm — below = B, above = C
   });
 
+  // Manual ruler drawing: null | 'x' | 'y'
+  const [jigDrawingRuler, setJigDrawingRuler] = useState(null);
+
   // Detection Tuning
   const [jigDetectionParams, setJigDetectionParams] = useState({
     minContourArea: 1000,
@@ -685,6 +688,256 @@ const PhotoScaleApp = () => {
     }, 100);
   };
 
+  // --- Jig Mode CV: Ruler Detection ---
+  const detectRulers = () => {
+    if (!window.cv || !cvReady || !image) return;
+    setIsProcessing(true);
+
+    setTimeout(() => {
+      const mats = [];
+      try {
+        const cv = window.cv;
+        const src = cv.imread(canvasRef.current); mats.push(src);
+        const gray = new cv.Mat(); mats.push(gray);
+        const edges = new cv.Mat(); mats.push(edges);
+        const lines = new cv.Mat(); mats.push(lines);
+
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+        cv.Canny(gray, edges, 50, 150);
+
+        // Detect line segments via Hough Transform
+        const minLineLength = Math.min(src.cols, src.rows) * 0.15;
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 80, minLineLength, 15);
+
+        // Classify lines as horizontal or vertical
+        const horizontalLines = [];
+        const verticalLines = [];
+        for (let i = 0; i < lines.rows; i++) {
+          const x1 = lines.data32S[i * 4];
+          const y1 = lines.data32S[i * 4 + 1];
+          const x2 = lines.data32S[i * 4 + 2];
+          const y2 = lines.data32S[i * 4 + 3];
+          const angle = Math.abs(Math.atan2(y2 - y1, x2 - x1)) * (180 / Math.PI);
+
+          if (angle < 20) {
+            horizontalLines.push({ x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1) });
+          } else if (angle > 70 && angle < 110) {
+            verticalLines.push({ x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1) });
+          }
+        }
+
+        // Find ruler candidates by clustering parallel lines
+        const xRulerResult = findRulerCandidate(gray, horizontalLines, 'x', src);
+        const yRulerResult = findRulerCandidate(gray, verticalLines, 'y', src);
+
+        if (xRulerResult) setXRuler(xRulerResult);
+        if (yRulerResult) setYRuler(yRulerResult);
+
+        if (!xRulerResult && !yRulerResult) {
+          alert('Could not detect rulers. Try manual calibration or ensure rulers are visible with good contrast.');
+        }
+
+      } catch (e) {
+        console.error('Ruler detection error:', e);
+        alert('Error detecting rulers: ' + e.message);
+      } finally {
+        mats.forEach(m => m.delete());
+      }
+      setIsProcessing(false);
+    }, 100);
+  };
+
+  const findRulerCandidate = (gray, lines, axis, src) => {
+    if (lines.length < 2) return null;
+
+    // Sort lines by length (longest first)
+    lines.sort((a, b) => b.length - a.length);
+
+    // Try the longest lines as ruler candidates
+    // A ruler is a long straight region with regular tick marks
+    for (let i = 0; i < Math.min(lines.length, 10); i++) {
+      const line = lines[i];
+      const tickResult = detectTickMarks(gray, line, axis, src);
+      if (tickResult && tickResult.ticks.length >= 5) {
+        return tickResult;
+      }
+    }
+
+    // Fallback: use the two longest lines as ruler endpoints
+    if (lines.length >= 1) {
+      const longest = lines[0];
+      const start = { x: longest.x1, y: longest.y1 };
+      const end = { x: longest.x2, y: longest.y2 };
+      const lengthPx = Math.hypot(end.x - start.x, end.y - start.y);
+      const defaultLengthMm = 400; // 40 cm default
+      return {
+        line: { start, end },
+        ticks: [{ px: 0, mm: 0 }, { px: lengthPx, mm: defaultLengthMm }],
+        scalePxPerMm: lengthPx / defaultLengthMm,
+        length: defaultLengthMm,
+      };
+    }
+
+    return null;
+  };
+
+  const detectTickMarks = (gray, line, axis, src) => {
+    const cv = window.cv;
+    const mats = [];
+
+    try {
+      // Extract a narrow strip of pixels along the line
+      const stripWidth = 30; // pixels perpendicular to the ruler direction
+      const x1 = line.x1, y1 = line.y1, x2 = line.x2, y2 = line.y2;
+
+      let profile = [];
+
+      if (axis === 'x') {
+        // Horizontal ruler: extract horizontal strip, compute column averages
+        const minX = Math.max(0, Math.min(x1, x2));
+        const maxX = Math.min(src.cols - 1, Math.max(x1, x2));
+        const centerY = Math.round((y1 + y2) / 2);
+        const yStart = Math.max(0, centerY - Math.floor(stripWidth / 2));
+        const yEnd = Math.min(src.rows - 1, centerY + Math.floor(stripWidth / 2));
+
+        // Extract region of interest
+        const roi = gray.roi(new cv.Rect(minX, yStart, maxX - minX, yEnd - yStart));
+        mats.push(roi);
+
+        // Compute column-wise average (1D intensity profile along X)
+        for (let col = 0; col < roi.cols; col++) {
+          let sum = 0;
+          for (let row = 0; row < roi.rows; row++) {
+            sum += roi.ucharAt(row, col);
+          }
+          profile.push({ pos: minX + col, value: sum / roi.rows });
+        }
+      } else {
+        // Vertical ruler: extract vertical strip, compute row averages
+        const minY = Math.max(0, Math.min(y1, y2));
+        const maxY = Math.min(src.rows - 1, Math.max(y1, y2));
+        const centerX = Math.round((x1 + x2) / 2);
+        const xStart = Math.max(0, centerX - Math.floor(stripWidth / 2));
+        const xEnd = Math.min(src.cols - 1, centerX + Math.floor(stripWidth / 2));
+
+        const roi = gray.roi(new cv.Rect(xStart, minY, xEnd - xStart, maxY - minY));
+        mats.push(roi);
+
+        // Compute row-wise average (1D intensity profile along Y)
+        for (let row = 0; row < roi.rows; row++) {
+          let sum = 0;
+          for (let col = 0; col < roi.cols; col++) {
+            sum += roi.ucharAt(row, col);
+          }
+          profile.push({ pos: minY + row, value: sum / roi.cols });
+        }
+      }
+
+      if (profile.length < 50) return null;
+
+      // Smooth the profile with a simple moving average
+      const smoothed = smoothProfile(profile.map(p => p.value), 5);
+
+      // Find local minima (dark tick marks on light background)
+      const minDistance = 15; // minimum pixels between ticks
+      const ticks_px = findLocalMinima(smoothed, minDistance, 20);
+
+      if (ticks_px.length < 3) return null;
+
+      // Map tick pixel indices back to image coordinates
+      const tickPositions = ticks_px.map(idx => profile[idx].pos);
+
+      // Compute spacings between consecutive ticks
+      const spacings = [];
+      for (let i = 1; i < tickPositions.length; i++) {
+        spacings.push(Math.abs(tickPositions[i] - tickPositions[i - 1]));
+      }
+
+      // Find median spacing (= 1 cm = 10mm in real world)
+      const medianSpacing = median(spacings);
+
+      // Filter out ticks whose spacing deviates >40% from median
+      const filteredTicks = [tickPositions[0]];
+      for (let i = 1; i < tickPositions.length; i++) {
+        const spacing = Math.abs(tickPositions[i] - tickPositions[i - 1]);
+        if (Math.abs(spacing - medianSpacing) / medianSpacing < 0.4) {
+          filteredTicks.push(tickPositions[i]);
+        }
+      }
+
+      if (filteredTicks.length < 3) return null;
+
+      // Assign real-world values: each tick = 1 cm = 10 mm
+      const ticks = filteredTicks.map((px, i) => ({ px, mm: i * 10 }));
+
+      // Compute scale factor via linear regression
+      const scalePxPerMm = medianSpacing / 10; // pixels per mm
+
+      // Construct ruler line endpoints
+      const start = axis === 'x'
+        ? { x: filteredTicks[0], y: Math.round((y1 + y2) / 2) }
+        : { x: Math.round((x1 + x2) / 2), y: filteredTicks[0] };
+      const end = axis === 'x'
+        ? { x: filteredTicks[filteredTicks.length - 1], y: Math.round((y1 + y2) / 2) }
+        : { x: Math.round((x1 + x2) / 2), y: filteredTicks[filteredTicks.length - 1] };
+
+      return {
+        line: { start, end },
+        ticks,
+        scalePxPerMm,
+        length: ticks[ticks.length - 1].mm,
+      };
+    } catch (e) {
+      console.error('Tick detection error:', e);
+      return null;
+    } finally {
+      mats.forEach(m => m.delete());
+    }
+  };
+
+  // --- Jig Mode Helpers ---
+  const smoothProfile = (values, windowSize) => {
+    const result = [];
+    const half = Math.floor(windowSize / 2);
+    for (let i = 0; i < values.length; i++) {
+      let sum = 0, count = 0;
+      for (let j = Math.max(0, i - half); j <= Math.min(values.length - 1, i + half); j++) {
+        sum += values[j];
+        count++;
+      }
+      result.push(sum / count);
+    }
+    return result;
+  };
+
+  const findLocalMinima = (values, minDistance, minProminence) => {
+    const minima = [];
+    for (let i = 1; i < values.length - 1; i++) {
+      if (values[i] < values[i - 1] && values[i] < values[i + 1]) {
+        // Check prominence: difference from surrounding peaks
+        let leftMax = values[i], rightMax = values[i];
+        for (let j = Math.max(0, i - minDistance); j < i; j++) leftMax = Math.max(leftMax, values[j]);
+        for (let j = i + 1; j <= Math.min(values.length - 1, i + minDistance); j++) rightMax = Math.max(rightMax, values[j]);
+        const prominence = Math.min(leftMax - values[i], rightMax - values[i]);
+        if (prominence >= minProminence) {
+          // Check minimum distance from last accepted minimum
+          if (minima.length === 0 || i - minima[minima.length - 1] >= minDistance) {
+            minima.push(i);
+          }
+        }
+      }
+    }
+    return minima;
+  };
+
+  const median = (arr) => {
+    if (arr.length === 0) return 0;
+    const sorted = [...arr].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  };
+
   // --- Geometry Helpers ---
   const getDistance = (p1, p2) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
@@ -813,6 +1066,9 @@ const PhotoScaleApp = () => {
     // Don't allow drawing while corners are shown
     if (paperCorners) return;
 
+    // In jig mode, only allow drawing when in manual ruler mode
+    if (jigMode && !jigDrawingRuler) return;
+
     setIsDrawing(true);
     setCurrentLine({ start: coords, end: coords });
   };
@@ -841,6 +1097,26 @@ const PhotoScaleApp = () => {
 
     const dist = getDistance(currentLine.start, currentLine.end);
     if (dist < 5) {
+      setCurrentLine(null);
+      return;
+    }
+
+    // Jig Mode: manual ruler drawing
+    if (jigMode && jigDrawingRuler) {
+      const lengthPx = dist;
+      const defaultLengthMm = 400;
+      const rulerData = {
+        line: { start: currentLine.start, end: currentLine.end },
+        ticks: [{ px: 0, mm: 0 }, { px: lengthPx, mm: defaultLengthMm }],
+        scalePxPerMm: lengthPx / defaultLengthMm,
+        length: defaultLengthMm,
+      };
+      if (jigDrawingRuler === 'x') {
+        setXRuler(rulerData);
+      } else {
+        setYRuler(rulerData);
+      }
+      setJigDrawingRuler(null);
       setCurrentLine(null);
       return;
     }
@@ -914,6 +1190,7 @@ const PhotoScaleApp = () => {
     setBaseLine(null);
     setDetectedDrills([]);
     setSelectedDrillId(null);
+    setJigDrawingRuler(null);
     setCategoryThresholds({ shortMax: 200, mediumMax: 300 });
     setJigDetectionParams({
       minContourArea: 1000,
@@ -1303,7 +1580,7 @@ const PhotoScaleApp = () => {
               {(isProcessing || isDetectingPaper) && (
                   <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex flex-col items-center justify-center text-blue-800 z-50">
                       <Loader2 size={48} className="animate-spin mb-2" />
-                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : 'Detecting Drill Shape...'}</span>
+                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : jigMode ? 'Detecting Rulers...' : 'Detecting Drill Shape...'}</span>
                   </div>
               )}
             </div>
@@ -1353,12 +1630,42 @@ const PhotoScaleApp = () => {
                         </div>
                     )}
                     <button
-                        disabled={!image || !cvReady}
+                        onClick={detectRulers}
+                        disabled={!image || !cvReady || isProcessing}
                         className="w-full h-[34px] px-3 bg-orange-600 text-white rounded-md text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                     >
-                        <Crosshair size={14} />
+                        {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
                         {xRuler ? 'Re-detect Rulers' : 'Detect Rulers'}
                     </button>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setJigDrawingRuler(jigDrawingRuler === 'x' ? null : 'x')}
+                            disabled={!image}
+                            className={`flex-1 h-[28px] px-2 rounded-md text-[10px] font-semibold flex items-center justify-center gap-1 transition ${
+                                jigDrawingRuler === 'x'
+                                    ? 'bg-cyan-600 text-white'
+                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                            }`}
+                        >
+                            <Ruler size={10} />
+                            {jigDrawingRuler === 'x' ? 'Drawing X...' : 'Draw X-Ruler'}
+                        </button>
+                        <button
+                            onClick={() => setJigDrawingRuler(jigDrawingRuler === 'y' ? null : 'y')}
+                            disabled={!image}
+                            className={`flex-1 h-[28px] px-2 rounded-md text-[10px] font-semibold flex items-center justify-center gap-1 transition ${
+                                jigDrawingRuler === 'y'
+                                    ? 'bg-cyan-600 text-white'
+                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                            }`}
+                        >
+                            <Ruler size={10} />
+                            {jigDrawingRuler === 'y' ? 'Drawing Y...' : 'Draw Y-Ruler'}
+                        </button>
+                    </div>
+                    {jigDrawingRuler && (
+                        <p className="text-[10px] text-cyan-600">Draw a line along the {jigDrawingRuler.toUpperCase()}-axis ruler (0 to 40cm)</p>
+                    )}
                 </div>
                 {!cvReady && <p className="text-[10px] text-gray-400 mt-1">Initializing Computer Vision Engine...</p>}
             </div>

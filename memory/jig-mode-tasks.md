@@ -6,12 +6,12 @@ Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md)
 
 ## 1. State & Mode Toggle
 
-- [ ] Add `jigMode` state and all new state variables to `App.jsx`
-- [ ] Add mode selector toggle (Standard / Jig Mode) in the header
-- [ ] Implement state reset when switching between modes
-- [ ] Render conditional sidebar skeleton (empty Jig Mode panels vs standard panels)
-- [ ] **Tests:** Verify mode toggle renders correct sidebar, state resets on switch
-- [ ] **Commit & push**
+- [x] Add `jigMode` state and all new state variables to `App.jsx`
+- [x] Add mode selector toggle (Standard / Jig Mode) in the header
+- [x] Implement state reset when switching between modes
+- [x] Render conditional sidebar skeleton (empty Jig Mode panels vs standard panels)
+- [x] **Tests:** Verify mode toggle renders correct sidebar, state resets on switch
+- [x] **Commit & push** _(88ce977)_
 
 ## 2. Ruler Detection Pipeline
 
