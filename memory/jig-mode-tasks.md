@@ -1,30 +1,56 @@
-# Jig Mode — Gemini Vision API Migration
+# Jig Mode — Drill Position Detection (Slot Occupancy)
 
-Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md) | [Issue #11](https://github.com/businessdatasolutions/photoscaler/issues/11)
-
----
-
-## Completed (OpenCV era)
-
-Tasks 1–10 implemented the original OpenCV-based pipeline (commits 88ce977 through 6877f55).
-That code has been replaced by a Gemini API integration.
+Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md) | [strips.json](../src/config/strips.json)
 
 ---
 
-## Gemini Migration
+## Prior Work (Complete)
 
-- [x] Create `src/geminiJig.js` — API call, prompt engineering, response parsing
-- [x] Add Gemini API key management (localStorage persistence, sidebar input)
-- [x] Replace 3-step OpenCV pipeline with single `analyzeWithGemini()` call
-- [x] Simplify sidebar: single "Analyze Jig" button, remove detection param sliders & debug toggle
-- [x] Remove dead code: `detectRulers()`, `detectBaseLine()`, `detectDrillsJig()`, manual ruler drawing
-- [x] Delete `src/rulerDetection.js`
-- [x] Remove ruler length modal
-- [x] Build passes
+- [x] Gemini-based height measurement (`src/geminiJig.js`, "Analyze Jig" button)
+- [x] Gemini API key management (localStorage + env var)
+- [x] Jig Mode UI (sidebar, canvas overlay, export)
 
-## Remaining
+---
 
-- [ ] Test with multiple jig photographs under varying lighting conditions
-- [ ] Performance test with 20+ drills in a single image
-- [ ] End-to-end test of full Flow F (upload → analyze → categorize → export)
-- [ ] Update `docs/tdd-jig-mode.md` to reflect Gemini-based architecture
+## Drill Position Detection Tasks
+
+### 1. Create `src/geminiSlots.js` — Gemini prompt & parser
+- [x] `analyzeJigSlots(apiKey, image)` — exported entry point
+- [x] `buildSlotDetectionPrompt(width, height)` — prompt for strip/slot detection
+- [x] `parseSlotDetectionResponse(text, imageWidth, imageHeight)` — extract JSON, validate, run disambiguation
+- [x] `resolveStripIds(detectedStrip)` — match color + slot_count against `strips.json`
+- [x] Copy `imageToBase64` and fetch boilerplate from `geminiJig.js`
+
+### 2. Strip ID disambiguation logic
+- [x] Auto-resolve unique color+slot_count combos (most strips)
+- [x] Flag ambiguous cases for user selection via dropdown
+
+### 3. Add state to `App.jsx`
+- [x] `slotDetectionResult`, `slotDetectionError`, `isDetectingSlots`
+- [x] Clear new state in `resetJigState()`
+
+### 4. Add `analyzeSlots()` handler in `App.jsx`
+- [x] Mirror `analyzeWithGemini()` pattern
+
+### 5. Sidebar UI — "Detect Drill Positions" button
+- [x] Purple button below existing "Analyze Jig"
+- [x] Shows spinner during analysis
+
+### 6. Sidebar UI — Slot occupancy grid
+- [x] Per strip: color swatch + strip ID + circles + occupancy count
+- [x] Disambiguation dropdown for ambiguous strips
+- [x] Manual toggle: click slot circle to flip occupied↔empty
+
+### 7. Canvas overlay for slot positions
+- [x] Dashed strip bounding boxes + slot markers (green=occupied, grey=empty)
+
+### 8. Export slot data
+- [x] Extended clipboard export with TSV slot grid
+
+### 9. Testing
+- [x] `npm run build` passes
+- [ ] Test with angled jig photo (strips and drills visible)
+- [ ] Verify strip color detection and slot counting
+- [ ] Verify disambiguation dropdown for ambiguous strips
+- [ ] Verify manual slot toggle works
+- [ ] Verify export includes slot data

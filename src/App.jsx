@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { Upload, Ruler, Trash2, RefreshCcw, Info, Check, AlertTriangle, Calculator, Cylinder, Crosshair, Loader2, Circle, FileImage, Move } from 'lucide-react';
 import { analyzeJigImage } from './geminiJig.js';
+import { analyzeJigSlots } from './geminiSlots.js';
+import stripsConfig from './config/strips.json';
 
 // Track OpenCV loading state outside component to survive StrictMode double-mount
 let cvLoadingStarted = false;
@@ -83,6 +85,11 @@ const PhotoScaleApp = () => {
     () => import.meta.env.VITE_GEMINI_API_KEY || localStorage.getItem('gemini_api_key') || ''
   );
   const [geminiError, setGeminiError] = useState(null);
+
+  // Slot Detection State
+  const [slotDetectionResult, setSlotDetectionResult] = useState(null);
+  const [slotDetectionError, setSlotDetectionError] = useState(null);
+  const [isDetectingSlots, setIsDetectingSlots] = useState(false);
 
   // Paper size definitions in mm
   const PAPER_SIZES = {
@@ -712,6 +719,23 @@ const PhotoScaleApp = () => {
     }
   };
 
+  const analyzeSlots = async () => {
+    if (!image || !geminiApiKey) return;
+    setIsDetectingSlots(true);
+    setSlotDetectionError(null);
+
+    try {
+      const result = await analyzeJigSlots(geminiApiKey, image);
+      setSlotDetectionResult(result);
+    } catch (err) {
+      console.error('Slot detection error:', err);
+      setSlotDetectionError(err.message);
+      alert('Slot detection failed: ' + err.message);
+    } finally {
+      setIsDetectingSlots(false);
+    }
+  };
+
   // --- Geometry Helpers ---
   const getDistance = (p1, p2) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
@@ -1019,6 +1043,9 @@ const PhotoScaleApp = () => {
     setJigAddingDrill(false);
     setCategoryThresholds({ shortMax: 200, mediumMax: 300 });
     setGeminiError(null);
+    setSlotDetectionResult(null);
+    setSlotDetectionError(null);
+    setIsDetectingSlots(false);
   };
 
   const resetStandardState = () => {
@@ -1449,10 +1476,52 @@ const PhotoScaleApp = () => {
         ctx.fillText(label, drill.centerX, labelY + 9);
       });
 
+      // Draw slot detection overlay
+      if (slotDetectionResult) {
+        slotDetectionResult.strips.forEach((strip) => {
+          const stripColor = stripsConfig.color_palette[strip.color_name] || '#888';
+
+          // Strip bounding box (dashed)
+          const bb = strip.boundingBox;
+          if (bb.width > 0 && bb.height > 0) {
+            ctx.strokeStyle = stripColor;
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.strokeRect(bb.x, bb.y, bb.width, bb.height);
+            ctx.setLineDash([]);
+          }
+
+          // Slot markers
+          strip.slots.forEach((slot) => {
+            const radius = 8;
+            ctx.beginPath();
+            ctx.arc(slot.x, slot.y, radius, 0, Math.PI * 2);
+            if (slot.occupied) {
+              ctx.fillStyle = 'rgba(34, 197, 94, 0.6)';
+              ctx.fill();
+              ctx.strokeStyle = '#16a34a';
+            } else {
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+              ctx.fill();
+              ctx.strokeStyle = '#d1d5db';
+            }
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Slot number
+            ctx.fillStyle = slot.occupied ? '#fff' : '#9ca3af';
+            ctx.font = 'bold 8px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(slot.index), slot.x, slot.y);
+          });
+        });
+      }
+
       ctx.restore();
     }
 
-  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize, jigMode, xRuler, yRuler, baseLine, detectedDrills, selectedDrillId]);
+  }, [image, correctedImage, referenceLine, measurements, currentLine, scaleFactor, calcDiameterId, calcLengthId, paperCorners, detectedObject, showGrid, paperSize, jigMode, xRuler, yRuler, baseLine, detectedDrills, selectedDrillId, slotDetectionResult]);
 
 
   return (
@@ -1621,6 +1690,22 @@ const PhotoScaleApp = () => {
                     {baseLine && (
                         <p className="text-[10px] text-gray-500">Drag the white dashed line on the canvas to adjust base line</p>
                     )}
+
+                    {/* Slot Detection */}
+                    <button
+                        onClick={analyzeSlots}
+                        disabled={!image || !geminiApiKey || isDetectingSlots}
+                        className="w-full h-[34px] px-3 bg-purple-600 text-white rounded-md text-xs font-semibold hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                        {isDetectingSlots ? <Loader2 size={14} className="animate-spin" /> : <Circle size={14} />}
+                        {slotDetectionResult ? 'Re-detect Positions' : 'Detect Drill Positions'}
+                    </button>
+                    {isDetectingSlots && (
+                        <p className="text-[10px] text-purple-600">Detecting drill positions...</p>
+                    )}
+                    {slotDetectionError && (
+                        <p className="text-[10px] text-red-600">{slotDetectionError}</p>
+                    )}
                 </div>
             </div>
 
@@ -1692,6 +1777,76 @@ const PhotoScaleApp = () => {
                     </>
                 )}
 
+                {/* Slot Occupancy Grid */}
+                {slotDetectionResult && slotDetectionResult.strips.length > 0 && (
+                    <div className="space-y-2">
+                        <h3 className="text-xs font-bold text-purple-700">Drill Positions</h3>
+                        {slotDetectionResult.strips.map((strip, si) => (
+                            <div key={si} className="border border-gray-200 rounded-lg p-2 space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-1.5">
+                                        <div className="w-3 h-3 rounded border border-gray-300" style={{ backgroundColor: stripsConfig.color_palette[strip.color_name] || '#888' }} />
+                                        <span className="text-xs font-semibold">
+                                            {strip.resolved_id || strip.possible_ids.join(' / ') || '?'}
+                                        </span>
+                                        <span className="text-[10px] text-gray-400">({strip.color_name})</span>
+                                    </div>
+                                    <span className="text-[10px] text-gray-500">
+                                        {strip.slots.filter(s => s.occupied).length}/{strip.slot_count}
+                                    </span>
+                                </div>
+                                {/* Disambiguation dropdown */}
+                                {!strip.resolved_id && strip.possible_ids.length > 1 && (
+                                    <select
+                                        className="text-xs border border-gray-200 rounded px-1 py-0.5 w-full bg-white"
+                                        value=""
+                                        onChange={(e) => {
+                                            setSlotDetectionResult(prev => {
+                                                const next = { ...prev, strips: prev.strips.map((s, i) =>
+                                                    i === si ? { ...s, resolved_id: e.target.value } : s
+                                                )};
+                                                return next;
+                                            });
+                                        }}
+                                    >
+                                        <option value="">Select strip type...</option>
+                                        {strip.possible_ids.map(id => {
+                                            const def = stripsConfig.strips.find(s => s.id === id);
+                                            return <option key={id} value={id}>{id} ({def?.diameter_mm}mm, {def?.slot_count} slots)</option>;
+                                        })}
+                                    </select>
+                                )}
+                                {/* Slot circles */}
+                                <div className="flex gap-1 flex-wrap">
+                                    {strip.slots.map((slot) => (
+                                        <button
+                                            key={slot.index}
+                                            onClick={() => {
+                                                setSlotDetectionResult(prev => {
+                                                    const next = { ...prev, strips: prev.strips.map((s, i) =>
+                                                        i === si ? { ...s, slots: s.slots.map(sl =>
+                                                            sl.index === slot.index ? { ...sl, occupied: !sl.occupied } : sl
+                                                        )} : s
+                                                    )};
+                                                    return next;
+                                                });
+                                            }}
+                                            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-[7px] font-bold transition-colors ${
+                                                slot.occupied
+                                                    ? 'bg-gray-700 border-gray-800 text-white'
+                                                    : 'bg-white border-gray-300 text-gray-400'
+                                            }`}
+                                            title={`Slot ${slot.index}: ${slot.occupied ? 'Occupied' : 'Empty'} (click to toggle)`}
+                                        >
+                                            {slot.index}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
                 {/* Category Thresholds */}
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
                     <h3 className="text-xs font-bold text-gray-700 mb-2">Category Thresholds</h3>
@@ -1734,12 +1889,30 @@ const PhotoScaleApp = () => {
                 )}
 
                 {/* Export */}
-                {detectedDrills.length > 0 && (
+                {(detectedDrills.length > 0 || slotDetectionResult) && (
                     <button
                         onClick={() => {
-                            const header = 'Index\tHeight(mm)\tCategory';
-                            const rows = detectedDrills.map(d => `${d.id}\t${Math.round(d.heightMm)}\t${d.category}`);
-                            navigator.clipboard.writeText([header, ...rows].join('\n'));
+                            const sections = [];
+                            if (detectedDrills.length > 0) {
+                                const header = 'Index\tHeight(mm)\tCategory';
+                                const rows = detectedDrills.map(d => `${d.id}\t${Math.round(d.heightMm)}\t${d.category}`);
+                                sections.push([header, ...rows].join('\n'));
+                            }
+                            if (slotDetectionResult && slotDetectionResult.strips.length > 0) {
+                                const maxSlots = Math.max(...slotDetectionResult.strips.map(s => s.slot_count));
+                                const slotHeaders = Array.from({ length: maxSlots }, (_, i) => `Slot ${i + 1}`);
+                                const header = ['Strip', 'Color', ...slotHeaders].join('\t');
+                                const rows = slotDetectionResult.strips.map(s => {
+                                    const id = s.resolved_id || s.possible_ids.join('/') || '?';
+                                    const slotCells = Array.from({ length: maxSlots }, (_, i) => {
+                                        const slot = s.slots.find(sl => sl.index === i + 1);
+                                        return slot ? (slot.occupied ? 'X' : '-') : '';
+                                    });
+                                    return [id, s.color_name, ...slotCells].join('\t');
+                                });
+                                sections.push(['', 'Drill Positions', header, ...rows].join('\n'));
+                            }
+                            navigator.clipboard.writeText(sections.join('\n\n'));
                         }}
                         className="w-full h-[34px] px-3 bg-gray-700 text-white rounded-md text-xs font-semibold hover:bg-gray-800 flex items-center justify-center gap-1"
                     >
