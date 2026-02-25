@@ -11,6 +11,11 @@ export const GEMINI_MODELS = [
   { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
 ];
 
+export const PROMPT_VERSIONS = [
+  { id: 'v1', label: 'V1 — Geometry' },
+  { id: 'v2', label: 'V2 — 3-Phase Analysis' },
+];
+
 /**
  * Build disambiguation hints grouped by color for the prompt.
  */
@@ -25,13 +30,20 @@ function buildStripHints() {
     .join('\n');
 }
 
-function buildSlotDetectionPrompt(imageWidth, imageHeight) {
+function buildImageIntro(imageWidth, imageHeight, imageCount) {
+  return imageCount > 1
+    ? `You are analyzing ${imageCount} photographs of the SAME drill bit storage jig taken from different angles. The jig is BLACK with a cross-hatch grid pattern. Colored plastic strips run as rows through the jig, each containing circular ring holders at regular intervals.
+
+The primary image (first image) is ${imageWidth}×${imageHeight} pixels. Use all images to cross-reference your occupancy decisions — if a slot looks ambiguous in one image, check the other image(s) for confirmation. Report coordinates relative to the FIRST image only.`
+    : `You are analyzing a TOP-DOWN photograph of a drill bit storage jig. The jig is BLACK with a cross-hatch grid pattern. Colored plastic strips run as rows through the jig, each containing circular ring holders at regular intervals.
+
+The image is ${imageWidth}×${imageHeight} pixels.`;
+}
+
+function buildSharedSections(imageWidth, imageHeight) {
   const hints = buildStripHints();
-  return `You are analyzing a TOP-DOWN photograph of a drill bit storage jig. The jig is BLACK with a cross-hatch grid pattern. Colored plastic strips run as rows through the jig, each containing circular ring holders at regular intervals.
-
-The image is ${imageWidth}×${imageHeight} pixels.
-
-PHYSICAL STRUCTURE:
+  return {
+    structure: `PHYSICAL STRUCTURE:
 Each strip is a colored plastic bar with circular ring holders molded into it. These rings are ALWAYS present — they are part of the strip, NOT drill bits. Each ring has an opening in the center.
 
 STRIP COLORS (Dutch names with hex values):
@@ -39,9 +51,46 @@ zwart (#1a1a1a), bruin (#8B4513), groen (#22c55e), grijs (#9ca3af), rood (#ef444
 geel (#fbbf24), wit (#f1f5f9), oranje (#f97316), blauw (#3b82f6), paars (#a855f7)
 
 KNOWN STRIP TYPES (by color):
-${hints}
+${hints}`,
+    confidence: `CONFIDENCE SCORING:
+For each slot, provide a confidence score between 0.0 and 1.0:
+- 0.9–1.0: Very clear — obvious drill geometry or obviously hollow/recessed
+- 0.7–0.9: Fairly confident — likely correct but some visual ambiguity
+- 0.5–0.7: Uncertain — hard to tell, could go either way
+- Below 0.5: Guessing — very unclear, defaulting to EMPTY`,
+    task: `TASK:
+1. Identify each colored strip visible in the jig.
+2. For each strip, count the total number of circular ring holders.
+3. For each ring, determine occupancy using the method described above.
+4. Rate your confidence for each slot determination.
+5. Report the approximate pixel bounding box of each strip and the pixel center of each slot.
 
-HOW TO DETERMINE SLOT OCCUPANCY (TOP-DOWN VIEW):
+Return ONLY valid JSON (no markdown fences) matching this schema:
+{
+  "strips": [
+    {
+      "color_name": "<Dutch color name from the list above>",
+      "slot_count": <total number of slots detected>,
+      "boundingBox": { "x": <px>, "y": <px>, "width": <px>, "height": <px> },
+      "slots": [
+        { "index": 1, "occupied": true, "confidence": 0.95, "x": <center px X>, "y": <center px Y> },
+        { "index": 2, "occupied": false, "confidence": 0.85, "x": <center px X>, "y": <center px Y> }
+      ]
+    }
+  ]
+}
+
+IMPORTANT:
+- The colored ring holders are part of the strip — do NOT count them as drills.
+- Do NOT use color or brightness alone to determine occupancy — empty slots can appear dark, bright, or colored depending on angle and lighting.
+- All coordinates are in pixels of the original ${imageWidth}×${imageHeight} image.
+- Detect ALL visible strips and ALL slots within each strip.
+- Number slots 1 to N from left to right (or top to bottom, depending on strip orientation) within each strip.
+- Order strips as they appear in the image.`,
+  };
+}
+
+const OCCUPANCY_V1 = `HOW TO DETERMINE SLOT OCCUPANCY (TOP-DOWN VIEW):
 This is about GEOMETRY, not color or brightness.
 
 - OCCUPIED: The ring opening is FILLED with a metallic drill bit. Look for:
@@ -58,37 +107,54 @@ This is about GEOMETRY, not color or brightness.
 
 KEY DISTINCTION: Does metallic drill geometry (flutes/spiral) fill the ring? → OCCUPIED. Is the ring center hollow/recessed with no drill geometry? → EMPTY.
 
-IMPORTANT BIAS: When uncertain, mark as EMPTY. Only mark occupied when you can clearly identify metallic drill geometry filling the ring.
+IMPORTANT BIAS: When uncertain, mark as EMPTY. Only mark occupied when you can clearly identify metallic drill geometry filling the ring.`;
 
-TASK:
-1. Identify each colored strip visible in the jig.
-2. For each strip, count the total number of circular ring holders.
-3. For each ring, check: does metallic drill geometry fill it (OCCUPIED) or is it hollow/recessed (EMPTY)?
-4. Report the approximate pixel bounding box of each strip and the pixel center of each slot.
+const OCCUPANCY_V2 = `ANALYSIS STRATEGY — work systematically in three phases:
 
-Return ONLY valid JSON (no markdown fences) matching this schema:
-{
-  "strips": [
-    {
-      "color_name": "<Dutch color name from the list above>",
-      "slot_count": <total number of slots detected>,
-      "boundingBox": { "x": <px>, "y": <px>, "width": <px>, "height": <px> },
-      "slots": [
-        { "index": 1, "occupied": true, "x": <center px X>, "y": <center px Y> },
-        { "index": 2, "occupied": false, "x": <center px X>, "y": <center px Y> }
-      ]
-    }
-  ]
-}
+Phase 1 — Object Detection (find the "what"):
+- Identify the black rectangular jig frame with its cross-hatch grid pattern.
+- Isolate each colored strip by its high-contrast color against the black/grey jig.
+- Look for metallic textures, flutes (spiral grooves on drills), and light reflections that differ from the matte plastic of the jig and strips.
 
-IMPORTANT:
-- The colored ring holders are part of the strip — do NOT count them as drills.
-- OCCUPIED = metallic drill geometry (flutes/spiral) fills the ring. EMPTY = ring is hollow/recessed, no drill geometry visible.
-- Do NOT use color or brightness to determine occupancy — empty slots can appear dark, bright, or colored depending on angle and lighting.
-- All coordinates are in pixels of the original ${imageWidth}×${imageHeight} image.
-- Detect ALL visible strips and ALL slots within each strip.
-- Number slots 1 to N from left to right (or top to bottom, depending on strip orientation) within each strip.
-- Order strips as they appear in the image.`;
+Phase 2 — Spatial Mapping (find the "where"):
+- Overlay a mental grid aligned to the strips and their slot positions.
+- Sweep LEFT-TO-RIGHT (or top-to-bottom) across each strip to avoid double-counting.
+- Use depth cues: tool angles, overhead perspective, and whether a tool might be hidden behind a taller one.
+
+Phase 3 — Feature Extraction (confirm occupancy per slot):
+For each ring holder, apply these three tests:
+
+1. CIRCULAR PROFILE TEST:
+   - EMPTY: The ring center shows a hollow circle — you can see the inner wall of the ring and the bottom of the holder (recessed/lower).
+   - OCCUPIED: The ring center shows a solid mass — the sharpened face of an end mill or the point of a drill bit fills the opening.
+
+2. MATERIAL CONTRAST TEST:
+   - EMPTY: The center matches the plastic material of the jig (matte, uniform).
+   - OCCUPIED: The center has a metallic sheen — carbide or high-speed steel glint, clearly different from the surrounding plastic.
+
+3. SHADOW ANALYSIS TEST:
+   - EMPTY: A deep, uniform shadow inside the holder — light falls unobstructed into the hole.
+   - OCCUPIED: A disrupted shadow — a tool blocks the light, creating irregular shadow patterns or reflections.
+
+OCCUPANCY DECISION:
+- OCCUPIED = at least 2 of the 3 tests indicate a tool is present, AND you can identify drill geometry (flutes/spiral/cutting edges).
+- EMPTY = the ring center is hollow/recessed with no drill geometry visible.
+- IMPORTANT BIAS: When uncertain, mark as EMPTY. Only mark occupied when you can clearly confirm metallic drill geometry.`;
+
+function buildSlotDetectionPrompt(imageWidth, imageHeight, imageCount = 1, version = 'v1') {
+  const intro = buildImageIntro(imageWidth, imageHeight, imageCount);
+  const shared = buildSharedSections(imageWidth, imageHeight);
+  const occupancy = version === 'v2' ? OCCUPANCY_V2 : OCCUPANCY_V1;
+
+  return `${intro}
+
+${shared.structure}
+
+${occupancy}
+
+${shared.confidence}
+
+${shared.task}`;
 }
 
 /**
@@ -144,6 +210,7 @@ function parseSlotDetectionResponse(text, imageWidth, imageHeight) {
       slots: (strip.slots || []).map(slot => ({
         index: slot.index,
         occupied: !!slot.occupied,
+        confidence: typeof slot.confidence === 'number' ? slot.confidence : 1.0,
         x: slot.x || 0,
         y: slot.y || 0,
       })),
@@ -194,16 +261,24 @@ function scaleSlotResult(result, factor) {
 }
 
 /**
- * Analyze a jig photo for slot occupancy using Gemini API.
+ * Analyze jig photo(s) for slot occupancy using Gemini API.
  * @param {string} apiKey
- * @param {HTMLImageElement} image
- * @param {string} [model='gemini-3-flash'] - Gemini model ID
+ * @param {HTMLImageElement|HTMLImageElement[]} images - single image or array of images
+ * @param {string} [model='gemini-3-flash-preview'] - Gemini model ID
+ * @param {string} [promptVersion='v1'] - Prompt version ('v1' or 'v2')
  * @returns {Promise<{ strips: Array }>}
  */
-export async function analyzeJigSlots(apiKey, image, model = 'gemini-3-flash-preview') {
-  const { base64, width, height, scale } = imageToBase64(image);
-  const prompt = buildSlotDetectionPrompt(width, height);
+export async function analyzeJigSlots(apiKey, images, model = 'gemini-3-flash-preview', promptVersion = 'v1') {
+  // Normalize to array
+  const imageArray = Array.isArray(images) ? images : [images];
+  const encoded = imageArray.map(img => imageToBase64(img));
+  const primary = encoded[0];
+  const prompt = buildSlotDetectionPrompt(primary.width, primary.height, encoded.length, promptVersion);
   const url = `${GEMINI_API_BASE}/${model}:generateContent`;
+
+  const imageParts = encoded.map(enc => ({
+    inline_data: { mime_type: 'image/jpeg', data: enc.base64 },
+  }));
 
   const response = await fetch(`${url}?key=${apiKey}`, {
     method: 'POST',
@@ -212,7 +287,7 @@ export async function analyzeJigSlots(apiKey, image, model = 'gemini-3-flash-pre
       contents: [{
         parts: [
           { text: prompt },
-          { inline_data: { mime_type: 'image/jpeg', data: base64 } },
+          ...imageParts,
         ],
       }],
       generationConfig: {
@@ -245,10 +320,10 @@ export async function analyzeJigSlots(apiKey, image, model = 'gemini-3-flash-pre
     throw new Error('Gemini returned an empty response. Try again with a clearer photo.');
   }
 
-  const result = parseSlotDetectionResponse(text, width, height);
+  const result = parseSlotDetectionResponse(text, primary.width, primary.height);
 
-  if (scale < 1) {
-    scaleSlotResult(result, 1 / scale);
+  if (primary.scale < 1) {
+    scaleSlotResult(result, 1 / primary.scale);
   }
 
   if (result.strips.length === 0) {

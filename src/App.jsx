@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Upload, Ruler, Trash2, RefreshCcw, Info, Check, AlertTriangle, Calculator, Cylinder, Crosshair, Loader2, Circle, FileImage, Move } from 'lucide-react';
 import { analyzeJigImage } from './geminiJig.js';
-import { analyzeJigSlots, GEMINI_MODELS } from './geminiSlots.js';
+import { analyzeJigSlots, GEMINI_MODELS, PROMPT_VERSIONS } from './geminiSlots.js';
 import stripsConfig from './config/strips.json';
 
 // Track OpenCV loading state outside component to survive StrictMode double-mount
@@ -91,6 +91,8 @@ const PhotoScaleApp = () => {
   const [slotDetectionError, setSlotDetectionError] = useState(null);
   const [isDetectingSlots, setIsDetectingSlots] = useState(false);
   const [slotGeminiModel, setSlotGeminiModel] = useState('gemini-3-flash-preview');
+  const [slotPromptVersion, setSlotPromptVersion] = useState('v1');
+  const [slotImages, setSlotImages] = useState([]); // additional reference images for slot detection
 
   // Paper size definitions in mm
   const PAPER_SIZES = {
@@ -726,7 +728,8 @@ const PhotoScaleApp = () => {
     setSlotDetectionError(null);
 
     try {
-      const result = await analyzeJigSlots(geminiApiKey, image, slotGeminiModel);
+      const allImages = [image, ...slotImages];
+      const result = await analyzeJigSlots(geminiApiKey, allImages, slotGeminiModel, slotPromptVersion);
       setSlotDetectionResult(result);
     } catch (err) {
       console.error('Slot detection error:', err);
@@ -1047,6 +1050,7 @@ const PhotoScaleApp = () => {
     setSlotDetectionResult(null);
     setSlotDetectionError(null);
     setIsDetectingSlots(false);
+    setSlotImages([]);
   };
 
   const resetStandardState = () => {
@@ -1495,26 +1499,31 @@ const PhotoScaleApp = () => {
           // Slot markers
           strip.slots.forEach((slot) => {
             const radius = 8;
+            const conf = slot.confidence ?? 1;
+            const isUncertain = conf < 0.7;
+
             ctx.beginPath();
             ctx.arc(slot.x, slot.y, radius, 0, Math.PI * 2);
             if (slot.occupied) {
-              ctx.fillStyle = 'rgba(34, 197, 94, 0.6)';
+              ctx.fillStyle = `rgba(34, 197, 94, ${0.3 + 0.4 * conf})`;
               ctx.fill();
-              ctx.strokeStyle = '#16a34a';
+              ctx.strokeStyle = isUncertain ? '#eab308' : '#16a34a';
             } else {
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+              ctx.fillStyle = `rgba(255, 255, 255, ${0.1 + 0.3 * conf})`;
               ctx.fill();
-              ctx.strokeStyle = '#d1d5db';
+              ctx.strokeStyle = isUncertain ? '#eab308' : '#d1d5db';
             }
             ctx.lineWidth = 2;
+            if (isUncertain) ctx.setLineDash([3, 3]);
             ctx.stroke();
+            ctx.setLineDash([]);
 
-            // Slot number
+            // Slot number or "?" for uncertain
             ctx.fillStyle = slot.occupied ? '#fff' : '#9ca3af';
             ctx.font = 'bold 8px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(String(slot.index), slot.x, slot.y);
+            ctx.fillText(isUncertain ? '?' : String(slot.index), slot.x, slot.y);
           });
         });
       }
@@ -1705,13 +1714,65 @@ const PhotoScaleApp = () => {
                             ))}
                         </select>
                     </div>
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-purple-400 mb-0.5 block">Prompt</label>
+                        <select
+                            value={slotPromptVersion}
+                            onChange={(e) => setSlotPromptVersion(e.target.value)}
+                            className="w-full text-xs px-2 py-1 border border-gray-200 rounded bg-white mb-1.5"
+                        >
+                            {PROMPT_VERSIONS.map(p => (
+                                <option key={p.id} value={p.id}>{p.label}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    {/* Additional reference photos */}
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-purple-400 mb-0.5 block">Reference Photos</label>
+                        <p className="text-[10px] text-gray-400 mb-1">Add extra angles for better accuracy</p>
+                        <div className="flex flex-wrap gap-1 mb-1">
+                            {slotImages.map((img, idx) => (
+                                <div key={idx} className="relative w-12 h-12 border border-gray-200 rounded overflow-hidden group">
+                                    <img src={img.src} alt={`ref ${idx + 1}`} className="w-full h-full object-cover" />
+                                    <button
+                                        onClick={() => setSlotImages(prev => prev.filter((_, i) => i !== idx))}
+                                        className="absolute top-0 right-0 bg-red-500 text-white text-[8px] w-3.5 h-3.5 flex items-center justify-center rounded-bl opacity-0 group-hover:opacity-100"
+                                    >×</button>
+                                </div>
+                            ))}
+                        </div>
+                        <label className="inline-flex items-center gap-1 text-[10px] text-purple-600 cursor-pointer hover:text-purple-800">
+                            <span>+ Add photos</span>
+                            <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => {
+                                    const files = Array.from(e.target.files || []);
+                                    files.forEach(file => {
+                                        const reader = new FileReader();
+                                        reader.onload = (ev) => {
+                                            const img = new Image();
+                                            img.onload = () => setSlotImages(prev => [...prev, img]);
+                                            img.src = ev.target.result;
+                                        };
+                                        reader.readAsDataURL(file);
+                                    });
+                                    e.target.value = '';
+                                }}
+                            />
+                        </label>
+                    </div>
+
                     <button
                         onClick={analyzeSlots}
                         disabled={!image || !geminiApiKey || isDetectingSlots}
                         className="w-full h-[34px] px-3 bg-purple-600 text-white rounded-md text-xs font-semibold hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                     >
                         {isDetectingSlots ? <Loader2 size={14} className="animate-spin" /> : <Circle size={14} />}
-                        {slotDetectionResult ? 'Re-detect Positions' : 'Detect Drill Positions'}
+                        {slotDetectionResult ? 'Re-detect Positions' : `Detect Drill Positions${slotImages.length > 0 ? ` (${1 + slotImages.length} images)` : ''}`}
                     </button>
                     {isDetectingSlots && (
                         <p className="text-[10px] text-purple-600">Detecting drill positions...</p>
@@ -1806,6 +1867,11 @@ const PhotoScaleApp = () => {
                                     </div>
                                     <span className="text-[10px] text-gray-500">
                                         {strip.slots.filter(s => s.occupied).length}/{strip.slot_count}
+                                        {strip.slots.some(s => s.confidence < 0.7) && (
+                                            <span className="text-yellow-600 ml-1">
+                                                ({strip.slots.filter(s => s.confidence < 0.7).length} uncertain)
+                                            </span>
+                                        )}
                                     </span>
                                 </div>
                                 {/* Disambiguation dropdown */}
@@ -1848,8 +1914,9 @@ const PhotoScaleApp = () => {
                                                 slot.occupied
                                                     ? 'bg-gray-700 border-gray-800 text-white'
                                                     : 'bg-white border-gray-300 text-gray-400'
-                                            }`}
-                                            title={`Slot ${slot.index}: ${slot.occupied ? 'Occupied' : 'Empty'} (click to toggle)`}
+                                            } ${slot.confidence < 0.7 ? 'ring-2 ring-yellow-400' : ''}`}
+                                            style={{ opacity: 0.4 + 0.6 * (slot.confidence ?? 1) }}
+                                            title={`Slot ${slot.index}: ${slot.occupied ? 'Occupied' : 'Empty'} (${Math.round((slot.confidence ?? 1) * 100)}% confident) — click to toggle`}
                                         >
                                             {slot.index}
                                         </button>
@@ -1919,7 +1986,9 @@ const PhotoScaleApp = () => {
                                     const id = s.resolved_id || s.possible_ids.join('/') || '?';
                                     const slotCells = Array.from({ length: maxSlots }, (_, i) => {
                                         const slot = s.slots.find(sl => sl.index === i + 1);
-                                        return slot ? (slot.occupied ? 'X' : '-') : '';
+                                        if (!slot) return '';
+                                        const mark = slot.occupied ? 'X' : '-';
+                                        return slot.confidence < 0.7 ? `${mark}?` : mark;
                                     });
                                     return [id, s.color_name, ...slotCells].join('\t');
                                 });
