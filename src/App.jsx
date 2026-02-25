@@ -57,6 +57,8 @@ const PhotoScaleApp = () => {
 
   // Base Line
   const [baseLine, setBaseLine] = useState(null);
+  // Processing status message for jig mode
+  const [jigProcessingMsg, setJigProcessingMsg] = useState('');
   // { y: Number, mmValue: Number }
 
   // Multi-Drill Results
@@ -696,6 +698,7 @@ const PhotoScaleApp = () => {
   const detectRulers = () => {
     if (!window.cv || !cvReady || !image) return;
     setIsProcessing(true);
+    setJigProcessingMsg('Detecting Rulers...');
 
     setTimeout(() => {
       const mats = [];
@@ -904,6 +907,7 @@ const PhotoScaleApp = () => {
   const detectBaseLine = () => {
     if (!window.cv || !cvReady || !image) return;
     setIsProcessing(true);
+    setJigProcessingMsg('Detecting Base Line...');
 
     setTimeout(() => {
       const mats = [];
@@ -972,6 +976,7 @@ const PhotoScaleApp = () => {
   const detectDrillsJig = () => {
     if (!window.cv || !cvReady || !image || !yRuler || !baseLine) return;
     setIsProcessing(true);
+    setJigProcessingMsg('Detecting Drills...');
 
     setTimeout(() => {
       const mats = [];
@@ -1971,7 +1976,7 @@ const PhotoScaleApp = () => {
               {(isProcessing || isDetectingPaper) && (
                   <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex flex-col items-center justify-center text-blue-800 z-50">
                       <Loader2 size={48} className="animate-spin mb-2" />
-                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : jigMode ? 'Detecting Rulers...' : 'Detecting Drill Shape...'}</span>
+                      <span className="font-semibold">{isDetectingPaper ? 'Detecting Paper...' : jigMode ? jigProcessingMsg : 'Detecting Drill Shape...'}</span>
                   </div>
               )}
             </div>

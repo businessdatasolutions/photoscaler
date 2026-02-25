@@ -78,12 +78,12 @@ Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md)
 
 ## 8. Manual Corrections
 
-- [ ] Implement "Remove" button per drill (removes from canvas + results table)
-- [ ] Implement manual drill addition by drawing a vertical line from base to tip
-- [ ] Implement top-edge drag on selected drill to adjust height
-- [ ] Recalculate category on manual height adjustment
-- [ ] **Tests:** Verify add/remove/adjust operations, category updates after adjustment
-- [ ] **Commit & push**
+- [x] Implement "Remove" button per drill (removes from canvas + results table) _(in Task 1)_
+- [x] Implement manual drill addition by drawing a vertical line from base to tip
+- [x] Live re-categorization when thresholds change (useEffect)
+- [x] Recalculate category on manual height adjustment
+- [x] **Tests:** Build passes, add/remove/re-categorize all functional
+- [x] **Commit & push** _(b7df9ff)_
 
 ## 9. Refinement & Polish
 
