@@ -966,6 +966,110 @@ const PhotoScaleApp = () => {
     }, 100);
   };
 
+  // --- Jig Mode CV: Multi-Drill Detection ---
+  const detectDrillsJig = () => {
+    if (!window.cv || !cvReady || !image || !yRuler || !baseLine) return;
+    setIsProcessing(true);
+
+    setTimeout(() => {
+      const mats = [];
+      try {
+        const cv = window.cv;
+        const src = cv.imread(canvasRef.current); mats.push(src);
+        const gray = new cv.Mat(); mats.push(gray);
+        const binary = new cv.Mat(); mats.push(binary);
+
+        cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+
+        // Adaptive threshold handles non-uniform lighting
+        cv.adaptiveThreshold(
+          gray, binary, 255,
+          cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+          cv.THRESH_BINARY_INV,
+          jigDetectionParams.adaptiveBlockSize,
+          jigDetectionParams.adaptiveC
+        );
+
+        // Vertical kernel to separate touching drills
+        const vertKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 7));
+        mats.push(vertKernel);
+        const eroded = new cv.Mat(); mats.push(eroded);
+        const dilated = new cv.Mat(); mats.push(dilated);
+        cv.erode(binary, eroded, vertKernel, new cv.Point(-1, -1), 1);
+        cv.dilate(eroded, dilated, vertKernel, new cv.Point(-1, -1), 1);
+
+        // Standard cleanup
+        const closeKernel = cv.Mat.ones(5, 5, cv.CV_8U); mats.push(closeKernel);
+        cv.morphologyEx(dilated, dilated, cv.MORPH_CLOSE, closeKernel);
+
+        // Find contours
+        const contours = new cv.MatVector(); mats.push(contours);
+        const hierarchy = new cv.Mat(); mats.push(hierarchy);
+        cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+        const drills = [];
+        const tolerance = jigDetectionParams.baseLineTolerance;
+
+        for (let i = 0; i < contours.size(); i++) {
+          const cnt = contours.get(i);
+          const area = cv.contourArea(cnt);
+          if (area < jigDetectionParams.minContourArea) continue;
+
+          const rect = cv.minAreaRect(cnt);
+          const w = Math.min(rect.size.width, rect.size.height);
+          const h = Math.max(rect.size.width, rect.size.height);
+          const aspectRatio = h / w;
+          if (aspectRatio < jigDetectionParams.minAspectRatio) continue;
+
+          const vertices = cv.RotatedRect.points(rect);
+          const vArr = Array.from({ length: 4 }, (_, j) => ({
+            x: vertices[j].x, y: vertices[j].y
+          }));
+
+          const bottomY = Math.max(...vArr.map(v => v.y));
+          const topY = Math.min(...vArr.map(v => v.y));
+          const centerX = rect.center.x;
+
+          // Check proximity to base line
+          if (Math.abs(bottomY - baseLine.y) > tolerance) continue;
+
+          const heightPx = baseLine.y - topY;
+          const heightMm = heightPx / yRuler.scalePxPerMm;
+
+          // Skip negative or tiny heights
+          if (heightMm < 10) continue;
+
+          const category = heightMm < categoryThresholds.shortMax ? 'A'
+            : heightMm < categoryThresholds.mediumMax ? 'B' : 'C';
+
+          drills.push({
+            id: 0,
+            rect: { center: rect.center, size: rect.size, angle: rect.angle },
+            vertices: vArr,
+            topY, bottomY, centerX, heightPx, heightMm, category,
+          });
+        }
+
+        // Sort left to right and assign IDs
+        drills.sort((a, b) => a.centerX - b.centerX);
+        drills.forEach((d, idx) => { d.id = idx + 1; });
+
+        setDetectedDrills(drills);
+
+        if (drills.length === 0) {
+          alert('No drills detected. Try adjusting the sensitivity or base line position.');
+        }
+
+      } catch (e) {
+        console.error('Drill detection error:', e);
+        alert('Error detecting drills: ' + e.message);
+      } finally {
+        mats.forEach(m => { try { m.delete(); } catch (_) {} });
+      }
+      setIsProcessing(false);
+    }, 100);
+  };
+
   // --- Jig Mode Helpers ---
   const smoothProfile = (values, windowSize) => {
     const result = [];
@@ -1947,10 +2051,11 @@ const PhotoScaleApp = () => {
                         <span className="text-[10px] text-gray-500 font-mono">{jigDetectionParams.minAspectRatio}:1</span>
                     </div>
                     <button
-                        disabled={!xRuler || !yRuler || !baseLine}
+                        onClick={detectDrillsJig}
+                        disabled={!xRuler || !yRuler || !baseLine || isProcessing}
                         className="w-full h-[34px] px-3 bg-orange-600 text-white rounded-md text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
                     >
-                        <Crosshair size={14} />
+                        {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Crosshair size={14} />}
                         Detect Drills
                     </button>
                 </div>
