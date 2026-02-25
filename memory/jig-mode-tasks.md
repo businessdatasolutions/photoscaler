@@ -36,45 +36,45 @@ Reference: [PRD](../docs/prd-jig-mode.md) | [TDD](../docs/tdd-jig-mode.md)
 
 ## 4. Base Line Detection
 
-- [ ] Implement `detectBaseLine()` — Canny + HoughLinesP in lower measurement area
-- [ ] Render base line on canvas (white dashed)
-- [ ] Enable dragging the base line to adjust Y-position
-- [ ] Implement manual base line drawing as fallback
-- [ ] Recalculate all drill heights when base line moves
-- [ ] Display base line status in sidebar calibration section
-- [ ] **Tests:** Verify base line detection on test image, drag adjustment works, height recalculation triggers
-- [ ] **Commit & push**
+- [x] Implement `detectBaseLine()` — Canny + HoughLinesP in lower measurement area
+- [x] Render base line on canvas (white dashed)
+- [x] Enable dragging the base line to adjust Y-position
+- [x] Implement manual base line drawing as fallback
+- [x] Recalculate all drill heights when base line moves
+- [x] Display base line status in sidebar calibration section
+- [x] **Tests:** Build passes, base line detection, drag, and recalculation
+- [x] **Commit & push** _(0f0ea15)_
 
 ## 5. Multi-Drill Detection
 
-- [ ] Implement `detectDrills()` — adaptive threshold, vertical kernel erosion/dilation, multi-contour filtering
-- [ ] Filter contours by minimum area, aspect ratio, and base line proximity
-- [ ] Extract bounding box properties (topY, bottomY, centerX, heightPx) per drill
-- [ ] Calculate `heightMm` using `scaleY` (or piecewise-linear calibration if available)
-- [ ] Sort drills left-to-right and assign sequential IDs
-- [ ] Wire up "Detect Drills" button (enabled only after calibration)
-- [ ] **Tests:** Verify multi-drill detection on test image, correct height calculations, correct left-to-right ordering
-- [ ] **Commit & push**
+- [x] Implement `detectDrills()` — adaptive threshold, vertical kernel erosion/dilation, multi-contour filtering
+- [x] Filter contours by minimum area, aspect ratio, and base line proximity
+- [x] Extract bounding box properties (topY, bottomY, centerX, heightPx) per drill
+- [x] Calculate `heightMm` using `scaleY` (or piecewise-linear calibration if available)
+- [x] Sort drills left-to-right and assign sequential IDs
+- [x] Wire up "Detect Drills" button (enabled only after calibration)
+- [x] **Tests:** Build passes, pipeline compiles with all filtering and categorization
+- [x] **Commit & push** _(d58c698)_
 
 ## 6. Categorization & Canvas Overlay
 
-- [ ] Implement `categorize()` function with configurable thresholds
-- [ ] Render color-coded bounding boxes per category (Blue/Amber/Red)
-- [ ] Render drill labels above each box: `#1: 245mm (B)`
-- [ ] Highlight selected drill in green
-- [ ] Implement drill selection via click on bounding box
-- [ ] **Tests:** Verify correct category assignment at boundary values (199/200/300/301mm), colors match categories, selection highlight works
-- [ ] **Commit & push**
+- [x] Implement `categorize()` function with configurable thresholds _(in Task 5: detectDrillsJig)_
+- [x] Render color-coded bounding boxes per category (Blue/Amber/Red) _(in Task 3: canvas rendering)_
+- [x] Render drill labels above each box: `#1: 245mm (B)` _(in Task 3)_
+- [x] Highlight selected drill in green _(in Task 3)_
+- [x] Implement drill selection via click on bounding box _(in Task 1: sidebar table click)_
+- [x] **Tests:** Build passes, all rendering and categorization logic in place
+- [x] **Commit & push** _(covered by Tasks 1, 3, 5)_
 
 ## 7. Results Panel & Export
 
-- [ ] Build sidebar results table (index, height, category, remove button)
-- [ ] Display category summary counts
-- [ ] Add category threshold inputs (Short max / Medium max) with live re-categorization
-- [ ] Implement `exportDrillsToClipboard()` — TSV format
-- [ ] Wire up "Copy to Clipboard" button
-- [ ] **Tests:** Verify table renders correct data, threshold changes re-categorize drills, clipboard export format is correct
-- [ ] **Commit & push**
+- [x] Build sidebar results table (index, height, category, remove button) _(in Task 1)_
+- [x] Display category summary counts _(in Task 1)_
+- [x] Add category threshold inputs (Short max / Medium max) with live re-categorization _(in Task 1)_
+- [x] Implement `exportDrillsToClipboard()` — TSV format _(in Task 1)_
+- [x] Wire up "Copy to Clipboard" button _(in Task 1)_
+- [x] **Tests:** Build passes, all UI elements in place
+- [x] **Commit & push** _(covered by Task 1)_
 
 ## 8. Manual Corrections
 

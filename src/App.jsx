@@ -74,6 +74,8 @@ const PhotoScaleApp = () => {
   const [jigDrawingRuler, setJigDrawingRuler] = useState(null);
   // Base line dragging
   const [draggingBaseLine, setDraggingBaseLine] = useState(false);
+  // Manual drill addition mode
+  const [jigAddingDrill, setJigAddingDrill] = useState(false);
 
   // Detection Tuning
   const [jigDetectionParams, setJigDetectionParams] = useState({
@@ -1246,8 +1248,8 @@ const PhotoScaleApp = () => {
       return;
     }
 
-    // In jig mode, only allow drawing when in manual ruler mode
-    if (jigMode && !jigDrawingRuler) return;
+    // In jig mode, only allow drawing when in manual ruler or drill add mode
+    if (jigMode && !jigDrawingRuler && !jigAddingDrill) return;
 
     setIsDrawing(true);
     setCurrentLine({ start: coords, end: coords });
@@ -1327,6 +1329,45 @@ const PhotoScaleApp = () => {
       return;
     }
 
+    // Jig Mode: manual drill addition
+    if (jigMode && jigAddingDrill && yRuler && baseLine) {
+      const topY = Math.min(currentLine.start.y, currentLine.end.y);
+      const heightPx = baseLine.y - topY;
+      const heightMm = heightPx / yRuler.scalePxPerMm;
+
+      if (heightMm > 10) {
+        const category = heightMm < categoryThresholds.shortMax ? 'A'
+          : heightMm < categoryThresholds.mediumMax ? 'B' : 'C';
+        const centerX = (currentLine.start.x + currentLine.end.x) / 2;
+        const newDrill = {
+          id: detectedDrills.length + 1,
+          rect: null,
+          vertices: [
+            { x: centerX - 10, y: topY },
+            { x: centerX + 10, y: topY },
+            { x: centerX + 10, y: baseLine.y },
+            { x: centerX - 10, y: baseLine.y },
+          ],
+          topY,
+          bottomY: baseLine.y,
+          centerX,
+          heightPx,
+          heightMm,
+          category,
+        };
+
+        // Insert in sorted position and re-ID
+        const updated = [...detectedDrills, newDrill]
+          .sort((a, b) => a.centerX - b.centerX);
+        updated.forEach((d, i) => { d.id = i + 1; });
+        setDetectedDrills(updated);
+      }
+
+      setJigAddingDrill(false);
+      setCurrentLine(null);
+      return;
+    }
+
     if (!referenceLine) {
       // Reset the checkbox state for a fresh reference line
       setRefIsDiameter(false);
@@ -1398,6 +1439,7 @@ const PhotoScaleApp = () => {
     setSelectedDrillId(null);
     setJigDrawingRuler(null);
     setDraggingBaseLine(false);
+    setJigAddingDrill(false);
     setCategoryThresholds({ shortMax: 200, mediumMax: 300 });
     setJigDetectionParams({
       minContourArea: 1000,
@@ -1465,6 +1507,17 @@ const PhotoScaleApp = () => {
   const calculateAutoSurfaceArea = (length) => {
       return (Math.PI * referenceLine.realLength * length).toFixed(2);
   };
+
+  // --- Re-categorize drills when thresholds change ---
+  useEffect(() => {
+    if (detectedDrills.length === 0) return;
+    setDetectedDrills(prev => prev.map(d => ({
+      ...d,
+      category: d.heightMm < categoryThresholds.shortMax ? 'A'
+        : d.heightMm < categoryThresholds.mediumMax ? 'B' : 'C'
+    })));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryThresholds]);
 
   // --- Rendering Loop ---
   useEffect(() => {
@@ -1881,7 +1934,7 @@ const PhotoScaleApp = () => {
               </label>
             </div>
           ) : (
-            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : jigMode && jigDrawingRuler ? 'crosshair' : jigMode ? 'ns-resize' : 'crosshair' }}>
+            <div className="relative shadow-2xl rounded-sm overflow-hidden" style={{ cursor: paperCorners ? 'move' : jigMode && (jigDrawingRuler || jigAddingDrill) ? 'crosshair' : jigMode ? 'ns-resize' : 'crosshair' }}>
                <canvas
                 ref={canvasRef}
                 width={correctedImage ? correctedImage.naturalWidth : image.naturalWidth}
@@ -2155,6 +2208,20 @@ const PhotoScaleApp = () => {
                         </div>
                     </div>
                 </div>
+
+                {/* Manual drill addition */}
+                {yRuler && baseLine && (
+                    <button
+                        onClick={() => setJigAddingDrill(!jigAddingDrill)}
+                        className={`w-full h-[30px] px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1 transition ${
+                            jigAddingDrill
+                                ? 'bg-green-600 text-white'
+                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        }`}
+                    >
+                        {jigAddingDrill ? 'Drawing... click to cancel' : '+ Add Drill Manually'}
+                    </button>
+                )}
 
                 {/* Export */}
                 {detectedDrills.length > 0 && (
