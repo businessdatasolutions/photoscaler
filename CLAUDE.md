@@ -1,72 +1,25 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project Overview
-
-PhotoScale Estimator is a client-side web application for extracting dimensional data from images using a known reference measurement. It supports manual measurement, cylindrical surface area calculation, and automated object detection via OpenCV.js.
+Client-side web app for measuring objects in images. React + Vite + Tailwind + OpenCV.js (WASM). All logic in `src/App.jsx`.
 
 ## Commands
 
 ```bash
 npm install      # Install dependencies
-npm run dev      # Start dev server at localhost:5173
-npm run build    # Build for production (outputs to dist/)
-npm run preview  # Preview production build locally
+npm run dev      # Dev server at localhost:5173
+npm run build    # Production build (dist/)
 ```
 
 ## Deployment
 
-Deployed to GitHub Pages via GitHub Actions (`.github/workflows/deploy.yml`). Push to `main` triggers automatic build and deploy. The app is served from `/photoscaler/` base path.
+GitHub Pages via `.github/workflows/deploy.yml`. Push to `main` auto-deploys to `/photoscaler/`.
 
-## Tech Stack
+## Key Rule
 
-- **Framework:** React.js (hooks-based functional components)
-- **Build Tool:** Vite
-- **Styling:** Tailwind CSS
-- **Graphics:** HTML5 Canvas API
-- **Computer Vision:** OpenCV.js (WASM, loaded from CDN)
-- **Icons:** lucide-react
+All `cv.Mat` objects must be cleaned up with `.delete()` in try/finally.
 
-## Architecture
+## Docs
 
-Main component is `src/App.jsx`:
-
-| Section | Lines | Purpose |
-|---------|-------|---------|
-| State | 5-33 | React useState for image, measurements, scale factor, CV status |
-| OpenCV Loader | 35-57 | Dynamic script loading with async initialization |
-| Image Handler | 60-80 | File upload, FileReader, canvas sizing |
-| CV Pipeline | 82-195 | `detectDrill()` - grayscale → blur → threshold → contours → minAreaRect |
-| Drawing | 219-269 | Mouse/touch event handlers for line drawing |
-| Calculations | 271-339 | Scale factor, linear measurement, surface area |
-| Canvas Render | 341-416 | useEffect redraw loop with image + lines + labels |
-| UI Components | 419-782 | Header, canvas area, sidebar, modals |
-
-## Key Patterns
-
-**CV Pipeline (`detectDrill`):**
-1. Canvas → `cv.imread()` → cv.Mat
-2. RGB → Grayscale → GaussianBlur → Otsu threshold
-3. `findContours` → filter by area (>500px) → largest contour
-4. `minAreaRect` → extract width (diameter) / height (length)
-5. Auto-populate state with measurements
-6. Clean up Mat objects with `.delete()`
-
-**Canvas Rendering:**
-- Three layers: base image, vector lines (color-coded), text labels
-- Colors: Blue = reference, Red = measurements, Green = selected for calculation
-
-**Surface Area Calculation:**
-- Auto mode: reference flagged as diameter triggers automatic calculation
-- Manual mode: user selects diameter + length from dropdown
-- Formula: `π × diameter × length`
-
-## External Dependencies
-
-OpenCV.js is loaded at runtime from `https://docs.opencv.org/4.5.4/opencv.js`. The `cvReady` state flag tracks initialization status.
-
-## Documentation
-
-- `docs/prd.md` - Product requirements, user flows, future improvements
-- `docs/tdd.md` - Technical architecture, CV pipeline details, implementation roadmap
+- `docs/prd.md` / `docs/tdd.md` — Standard Mode
+- `docs/prd-jig-mode.md` / `docs/tdd-jig-mode.md` — Jig Mode (in development)
+- `memory/jig-mode-tasks.md` — Implementation checklist (follow sequentially, commit after each passing test group)

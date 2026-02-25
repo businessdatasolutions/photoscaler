@@ -47,6 +47,38 @@ const PhotoScaleApp = () => {
   const [detectedObject, setDetectedObject] = useState(null); // { rect: {x,y,width,height,angle}, heightMm, widthMm }
   const [isDetectingObject, setIsDetectingObject] = useState(false);
 
+  // --- Jig Mode State ---
+  const [jigMode, setJigMode] = useState(false);
+
+  // Ruler Calibration
+  const [xRuler, setXRuler] = useState(null);
+  // { line: {start,end}, ticks: [{px,mm}], scalePxPerMm: Number, length: Number }
+  const [yRuler, setYRuler] = useState(null);
+
+  // Base Line
+  const [baseLine, setBaseLine] = useState(null);
+  // { y: Number, mmValue: Number }
+
+  // Multi-Drill Results
+  const [detectedDrills, setDetectedDrills] = useState([]);
+  // Array of { id, rect, vertices, topY, bottomY, centerX, heightPx, heightMm, category }
+  const [selectedDrillId, setSelectedDrillId] = useState(null);
+
+  // Category Thresholds
+  const [categoryThresholds, setCategoryThresholds] = useState({
+    shortMax: 200,   // mm — below = A
+    mediumMax: 300,  // mm — below = B, above = C
+  });
+
+  // Detection Tuning
+  const [jigDetectionParams, setJigDetectionParams] = useState({
+    minContourArea: 1000,
+    minAspectRatio: 3.0,
+    adaptiveBlockSize: 15,
+    adaptiveC: 5,
+    baseLineTolerance: 30,
+  });
+
   // Paper size definitions in mm
   const PAPER_SIZES = {
     a4: { width: 210, height: 297, label: 'A4 (210×297mm)' },
@@ -875,6 +907,45 @@ const PhotoScaleApp = () => {
     setResetModalOpen(false);
   };
 
+  // --- Jig Mode Toggle ---
+  const resetJigState = () => {
+    setXRuler(null);
+    setYRuler(null);
+    setBaseLine(null);
+    setDetectedDrills([]);
+    setSelectedDrillId(null);
+    setCategoryThresholds({ shortMax: 200, mediumMax: 300 });
+    setJigDetectionParams({
+      minContourArea: 1000,
+      minAspectRatio: 3.0,
+      adaptiveBlockSize: 15,
+      adaptiveC: 5,
+      baseLineTolerance: 30,
+    });
+  };
+
+  const resetStandardState = () => {
+    setReferenceLine(null);
+    setScaleFactor(null);
+    setMeasurements([]);
+    setCurrentLine(null);
+    setCalcDiameterId('');
+    setCalcLengthId('');
+    setPaperCorners(null);
+    setCorrectedImage(null);
+    setDetectedObject(null);
+  };
+
+  const toggleJigMode = (enabled) => {
+    if (enabled === jigMode) return;
+    setJigMode(enabled);
+    if (enabled) {
+      resetStandardState();
+    } else {
+      resetJigState();
+    }
+  };
+
   const deleteMeasurement = (id) => {
     setMeasurements(measurements.filter(m => m.id !== id));
     if (calcDiameterId === id.toString()) setCalcDiameterId('');
@@ -1159,7 +1230,21 @@ const PhotoScaleApp = () => {
           <Ruler className="text-blue-600" size={24} />
           <h1 className="text-xl font-bold tracking-tight text-gray-900">PhotoScale Estimator</h1>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 items-center">
+            <div className="flex bg-gray-100 rounded-lg p-0.5">
+              <button
+                onClick={() => toggleJigMode(false)}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${!jigMode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                Standard
+              </button>
+              <button
+                onClick={() => toggleJigMode(true)}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition ${jigMode ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                Jig Mode
+              </button>
+            </div>
             <label className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 cursor-pointer transition shadow-sm">
                 <Upload size={18} />
                 <span className="font-medium text-sm">Upload Image</span>
@@ -1226,6 +1311,218 @@ const PhotoScaleApp = () => {
         </div>
 
         <div className="w-80 bg-white border-l border-gray-200 flex flex-col z-10 shadow-xl overflow-hidden">
+
+          {jigMode ? (
+            <>
+            {/* === JIG MODE SIDEBAR === */}
+
+            {/* Calibration Section */}
+            <div className="p-4 bg-orange-50 border-b border-orange-100">
+                <h2 className="text-sm font-bold text-orange-900 mb-3 flex items-center gap-2">
+                    <Crosshair size={16} /> Calibration
+                </h2>
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-600">X-Ruler:</span>
+                        {xRuler ? (
+                            <span className="font-mono text-orange-700">{xRuler.scalePxPerMm.toFixed(2)} px/mm</span>
+                        ) : (
+                            <span className="text-gray-400">Not detected</span>
+                        )}
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-600">Y-Ruler:</span>
+                        {yRuler ? (
+                            <span className="font-mono text-orange-700">{yRuler.scalePxPerMm.toFixed(2)} px/mm</span>
+                        ) : (
+                            <span className="text-gray-400">Not detected</span>
+                        )}
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-600">Base Line:</span>
+                        {baseLine ? (
+                            <span className="font-mono text-orange-700">Set (y={baseLine.y}px)</span>
+                        ) : (
+                            <span className="text-gray-400">Not detected</span>
+                        )}
+                    </div>
+                    {xRuler && yRuler && Math.abs(xRuler.scalePxPerMm - yRuler.scalePxPerMm) / Math.max(xRuler.scalePxPerMm, yRuler.scalePxPerMm) > 0.05 && (
+                        <div className="bg-amber-100 rounded p-2 text-[10px] text-amber-700 flex items-center gap-1">
+                            <AlertTriangle size={12} />
+                            Perspective: X/Y scales differ by {(Math.abs(xRuler.scalePxPerMm - yRuler.scalePxPerMm) / Math.max(xRuler.scalePxPerMm, yRuler.scalePxPerMm) * 100).toFixed(1)}%
+                        </div>
+                    )}
+                    <button
+                        disabled={!image || !cvReady}
+                        className="w-full h-[34px] px-3 bg-orange-600 text-white rounded-md text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                        <Crosshair size={14} />
+                        {xRuler ? 'Re-detect Rulers' : 'Detect Rulers'}
+                    </button>
+                </div>
+                {!cvReady && <p className="text-[10px] text-gray-400 mt-1">Initializing Computer Vision Engine...</p>}
+            </div>
+
+            {/* Detection Section */}
+            <div className="p-4 bg-orange-50/50 border-b border-orange-100">
+                <h2 className="text-sm font-bold text-orange-900 mb-3 flex items-center gap-2">
+                    <Crosshair size={16} /> Detection
+                </h2>
+                <div className="space-y-2">
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-orange-400 mb-0.5 block">Min. Contour Area</label>
+                        <input
+                            type="range"
+                            min="200"
+                            max="5000"
+                            step="100"
+                            value={jigDetectionParams.minContourArea}
+                            onChange={(e) => setJigDetectionParams(p => ({ ...p, minContourArea: Number(e.target.value) }))}
+                            className="w-full accent-orange-600"
+                        />
+                        <span className="text-[10px] text-gray-500 font-mono">{jigDetectionParams.minContourArea}px</span>
+                    </div>
+                    <div>
+                        <label className="text-[10px] uppercase font-bold text-orange-400 mb-0.5 block">Min. Aspect Ratio</label>
+                        <input
+                            type="range"
+                            min="1.5"
+                            max="8"
+                            step="0.5"
+                            value={jigDetectionParams.minAspectRatio}
+                            onChange={(e) => setJigDetectionParams(p => ({ ...p, minAspectRatio: Number(e.target.value) }))}
+                            className="w-full accent-orange-600"
+                        />
+                        <span className="text-[10px] text-gray-500 font-mono">{jigDetectionParams.minAspectRatio}:1</span>
+                    </div>
+                    <button
+                        disabled={!xRuler || !yRuler || !baseLine}
+                        className="w-full h-[34px] px-3 bg-orange-600 text-white rounded-md text-xs font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                    >
+                        <Crosshair size={14} />
+                        Detect Drills
+                    </button>
+                </div>
+            </div>
+
+            {/* Results Section */}
+            <div className="p-4 border-b border-gray-100 bg-white">
+                <h2 className="font-semibold text-gray-900 mb-1">Results</h2>
+                <p className="text-xs text-gray-500">
+                    {detectedDrills.length > 0
+                        ? `${detectedDrills.length} drills detected`
+                        : 'No drills detected yet'}
+                </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-white">
+                {detectedDrills.length > 0 && (
+                    <>
+                        {/* Drill Table */}
+                        <div className="border border-gray-200 rounded-lg overflow-hidden">
+                            <table className="w-full text-xs">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="text-left px-2 py-1.5 font-semibold text-gray-600">#</th>
+                                        <th className="text-left px-2 py-1.5 font-semibold text-gray-600">Height</th>
+                                        <th className="text-left px-2 py-1.5 font-semibold text-gray-600">Cat</th>
+                                        <th className="px-2 py-1.5"></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {detectedDrills.map((drill) => (
+                                        <tr
+                                            key={drill.id}
+                                            className={`border-t border-gray-100 cursor-pointer hover:bg-gray-50 ${selectedDrillId === drill.id ? 'bg-green-50' : ''}`}
+                                            onClick={() => setSelectedDrillId(selectedDrillId === drill.id ? null : drill.id)}
+                                        >
+                                            <td className="px-2 py-1.5 font-mono">{drill.id}</td>
+                                            <td className="px-2 py-1.5 font-mono">{Math.round(drill.heightMm)} mm</td>
+                                            <td className="px-2 py-1.5">
+                                                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold text-white ${
+                                                    drill.category === 'A' ? 'bg-blue-500' :
+                                                    drill.category === 'B' ? 'bg-amber-500' : 'bg-red-500'
+                                                }`}>
+                                                    {drill.category}
+                                                </span>
+                                            </td>
+                                            <td className="px-2 py-1.5">
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setDetectedDrills(prev => prev.filter(d => d.id !== drill.id));
+                                                    }}
+                                                    className="text-gray-300 hover:text-red-500"
+                                                >
+                                                    <Trash2 size={12} />
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        {/* Category Summary */}
+                        <div className="bg-gray-50 rounded-lg p-3 text-xs space-y-1">
+                            <div className="flex justify-between"><span className="text-blue-600 font-semibold">A (Short &lt;{categoryThresholds.shortMax}mm):</span><span className="font-mono">{detectedDrills.filter(d => d.category === 'A').length}</span></div>
+                            <div className="flex justify-between"><span className="text-amber-600 font-semibold">B (Medium {categoryThresholds.shortMax}–{categoryThresholds.mediumMax}mm):</span><span className="font-mono">{detectedDrills.filter(d => d.category === 'B').length}</span></div>
+                            <div className="flex justify-between"><span className="text-red-600 font-semibold">C (Long &gt;{categoryThresholds.mediumMax}mm):</span><span className="font-mono">{detectedDrills.filter(d => d.category === 'C').length}</span></div>
+                            <div className="flex justify-between border-t border-gray-200 pt-1 mt-1"><span className="font-bold text-gray-700">Total:</span><span className="font-mono font-bold">{detectedDrills.length}</span></div>
+                        </div>
+                    </>
+                )}
+
+                {/* Category Thresholds */}
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                    <h3 className="text-xs font-bold text-gray-700 mb-2">Category Thresholds</h3>
+                    <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                            <label className="text-[10px] text-gray-600 w-20">Short max:</label>
+                            <input
+                                type="number"
+                                value={categoryThresholds.shortMax}
+                                onChange={(e) => setCategoryThresholds(t => ({ ...t, shortMax: Number(e.target.value) }))}
+                                className="flex-1 text-xs px-2 py-1 border border-gray-200 rounded bg-white w-16"
+                            />
+                            <span className="text-[10px] text-gray-400">mm</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <label className="text-[10px] text-gray-600 w-20">Medium max:</label>
+                            <input
+                                type="number"
+                                value={categoryThresholds.mediumMax}
+                                onChange={(e) => setCategoryThresholds(t => ({ ...t, mediumMax: Number(e.target.value) }))}
+                                className="flex-1 text-xs px-2 py-1 border border-gray-200 rounded bg-white w-16"
+                            />
+                            <span className="text-[10px] text-gray-400">mm</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Export */}
+                {detectedDrills.length > 0 && (
+                    <button
+                        onClick={() => {
+                            const header = 'Index\tHeight(mm)\tCategory';
+                            const rows = detectedDrills.map(d => `${d.id}\t${Math.round(d.heightMm)}\t${d.category}`);
+                            navigator.clipboard.writeText([header, ...rows].join('\n'));
+                        }}
+                        className="w-full h-[34px] px-3 bg-gray-700 text-white rounded-md text-xs font-semibold hover:bg-gray-800 flex items-center justify-center gap-1"
+                    >
+                        Copy to Clipboard
+                    </button>
+                )}
+            </div>
+
+            <div className="p-3 bg-gray-50 border-t border-gray-200 text-[10px] text-gray-400 flex gap-2 shrink-0">
+                <Info size={14} className="shrink-0 text-gray-300"/>
+                <p>Place drills in the jig with rulers visible along both axes.</p>
+            </div>
+            </>
+          ) : (
+            <>
+            {/* === STANDARD MODE SIDEBAR === */}
 
             {/* Perspective Correction Panel */}
             <div className="p-4 bg-emerald-50 border-b border-emerald-100 relative">
@@ -1579,6 +1876,8 @@ const PhotoScaleApp = () => {
                 <Info size={14} className="shrink-0 text-gray-300"/>
                 <p>Ensure high contrast background for Auto-Detect.</p>
             </div>
+            </>
+          )}
         </div>
       </div>
 
